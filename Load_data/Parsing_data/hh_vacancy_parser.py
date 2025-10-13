@@ -1,6 +1,7 @@
 import requests
 import time
 import json
+import re
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -187,17 +188,20 @@ class HHVacancyParser:
         "Россия": 113
     }
 
-    def __init__(self, timeout=30, max_retries=3):
+    def __init__(self, timeout=30, max_retries=3, max_404_errors=5):
         """
         Инициализация парсера
         
         Args:
             timeout (int): Таймаут для запросов в секундах
             max_retries (int): Максимальное количество повторных попыток
+            max_404_errors (int): Максимальное количество ошибок 404 перед остановкой
         """
         self.base_url = 'https://api.hh.ru/vacancies'
         self.timeout = timeout
         self.session = requests.Session()
+        self.consecutive_404_errors = 0
+        self.max_404_errors = max_404_errors
         
         # Настройка стратегии повторных попыток
         retry_strategy = Retry(
@@ -223,8 +227,29 @@ class HHVacancyParser:
             'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
         })
         
-        logger.info(f"Парсер инициализирован: timeout={timeout}s, max_retries={max_retries}")
+        logger.info(f"Парсер инициализирован: timeout={timeout}s, max_retries={max_retries}, max_404_errors={max_404_errors}")
+    
+    def _check_404_limit(self):
+        """Проверка превышения лимита ошибок 404"""
+        if self.consecutive_404_errors >= self.max_404_errors:
+            logger.error(f"Достигнут лимит ошибок 404 ({self.max_404_errors}). Парсинг прекращен.")
+            return True
+        return False
+    
+    def _handle_404_error(self):
+        """Обработка ошибки 404 и проверка лимита"""
+        self.consecutive_404_errors += 1
+        logger.warning(f"Получена ошибка 404. Всего последовательных ошибок: {self.consecutive_404_errors}/{self.max_404_errors}")
         
+        if self._check_404_limit():
+            raise StopIteration("Превышен лимит ошибок 404")
+    
+    def _handle_successful_request(self):
+        """Сброс счетчика ошибок при успешном запросе"""
+        if self.consecutive_404_errors > 0:
+            logger.info(f"Сброс счетчика ошибок 404. Было: {self.consecutive_404_errors}")
+            self.consecutive_404_errors = 0
+
     def search_vacancies(self, search_text='Аналитик данных', area=1, page=0, per_page=100):
         """
         Поиск вакансий через API HH с обработкой ошибок
@@ -238,6 +263,10 @@ class HHVacancyParser:
         Returns:
             dict: JSON ответ от API или None в случае ошибки
         """
+        # Проверка лимита ошибок перед выполнением запроса
+        if self._check_404_limit():
+            return None
+            
         params = {
             'text': search_text,
             'area': area,
@@ -256,34 +285,46 @@ class HHVacancyParser:
             )
             
             if response.status_code == 200:
+                self._handle_successful_request()
                 logger.info(f"Страница {page} успешно загружена ({len(response.json().get('items', []))} вакансий)")
                 return response.json()
             elif response.status_code == 400:
+                self._handle_successful_request()
                 logger.warning(f"Некорректный запрос: {response.json().get('description', 'Unknown error')}")
                 return None
             elif response.status_code == 403:
+                self._handle_successful_request()
                 logger.error("Доступ запрещен. Возможно, превышен лимит запросов.")
                 return None
             elif response.status_code == 404:
+                self._handle_404_error()
                 logger.warning("Страница не найдена")
                 return None
             else:
+                self._handle_successful_request()
                 logger.warning(f"Ошибка API: {response.status_code} - {response.text[:100]}")
                 return None
                 
         except requests.exceptions.Timeout:
+            self._handle_successful_request()
             logger.error(f"Таймаут при запросе страницы {page} (timeout={self.timeout}s)")
             return None
         except requests.exceptions.ConnectionError:
+            self._handle_successful_request()
             logger.error("Ошибка подключения к API HH")
             return None
         except requests.exceptions.RequestException as e:
+            self._handle_successful_request()
             logger.error(f"Ошибка сети: {e}")
             return None
+        except StopIteration as e:
+            raise e
         except json.JSONDecodeError as e:
+            self._handle_successful_request()
             logger.error(f"Ошибка декодирования JSON: {e}")
             return None
         except Exception as e:
+            self._handle_successful_request()
             logger.error(f"Неожиданная ошибка: {e}")
             return None
     
@@ -318,7 +359,8 @@ class HHVacancyParser:
                     'id': item.get('id', ''),
                     'name': item.get('name', ''),
                     'area': item.get('area', {}).get('name', ''),
-                    'url': item.get('alternate_url', ''),
+                    'url': item.get('url', ''),
+                    'alternate_url': item.get('alternate_url', ''),
                     'requirement': item.get('snippet', {}).get('requirement', ''),
                     'responsibility': item.get('snippet', {}).get('responsibility', ''),
                     'employer': item.get('employer', {}).get('name', ''),
@@ -345,12 +387,17 @@ class HHVacancyParser:
                         'salary_currency': None,
                         'salary_gross': None
                     })
+
+                details = self.get_vacancy_details(vacancy['id'], vacancy['url'])
+                vacancy.update(details)
                 
                 # Очистка HTML тегов
                 if vacancy['requirement']:
                     vacancy['requirement'] = self._clean_html_tags(vacancy['requirement'])
                 if vacancy['responsibility']:
                     vacancy['responsibility'] = self._clean_html_tags(vacancy['responsibility'])
+                if vacancy['description']:
+                    vacancy['description'] = self._clean_html_tags(vacancy['description'])
                 
                 vacancies.append(vacancy)
                 
@@ -365,7 +412,7 @@ class HHVacancyParser:
         """Очистка HTML тегов из текста"""
         if not text:
             return text
-        return text.replace('<highlighttext>', '').replace('</highlighttext>', '')
+        return re.sub(r'<[^>]+>', '', text)
     
     def load_vacancies(self, search_terms, areas, pages=1, per_page=100, delay=1, 
                       use_progress_bar=True, stop_on_rate_limit=True):
@@ -414,64 +461,82 @@ class HHVacancyParser:
         request_count = 0
         error_count = 0
         
-        for search_term in search_terms:
-            logger.info(f"Поиск по запросу: '{search_term}'")
-            
-            for area_id in area_ids:
-                area_name = self._get_area_name(area_id)
-                logger.info(f"Регион: {area_name} (ID: {area_id})")
+        try:
+            for search_term in search_terms:
+                # Проверка лимита ошибок перед новым запросом
+                if self._check_404_limit():
+                    logger.warning("Прерывание парсинга из-за превышения лимита ошибок 404")
+                    break
+                    
+                logger.info(f"Поиск по запросу: '{search_term}'")
                 
-                for page in range(pages):
-                    request_count += 1
-                    
-                    if use_progress_bar:
-                        pbar.update(1)
-                        pbar.set_postfix({
-                            'Вакансии': len(all_vacancies),
-                            'Ошибки': error_count,
-                            'Страница': f"{page+1}/{pages}"
-                        })
-                    
-                    logger.debug(f"Запрос: '{search_term}', регион {area_id}, страница {page+1}")
-                    
-                    json_data = self.search_vacancies(
-                        search_text=search_term,
-                        area=area_id,
-                        page=page,
-                        per_page=per_page
-                    )
-                    
-                    if json_data:
-                        vacancies = self.parse_vacancies_page(json_data)
-                        logger.info(f"Найдено вакансий для '{search_term}': {len(vacancies)}")
+                for area_id in area_ids:
+                    # Проверка лимита ошибок перед новым регионом
+                    if self._check_404_limit():
+                        break
                         
-                        # Добавляем поисковый запрос к каждой вакансии
-                        for vacancy in vacancies:
-                            vacancy['search_query'] = search_term
-                            vacancy['area_id'] = area_id
-                        
-                        all_vacancies.extend(vacancies)
-                        
-                        # Проверка на последнюю страницу
-                        total_pages = json_data.get('pages', 1)
-                        found = json_data.get('found', 0)
-                        
-                        if page >= total_pages - 1:
-                            logger.info(f"Достигнута последняя страница. Всего найдено: {found} вакансий")
+                    area_name = self._get_area_name(area_id)
+                    logger.info(f"Регион: {area_name} (ID: {area_id})")
+                    
+                    for page in range(pages):
+                        # Проверка лимита ошибок перед каждой страницей
+                        if self._check_404_limit():
+                            logger.warning("Прерывание парсинга из-за превышения лимита ошибок 404")
                             break
                             
-                        # Проверка на лимит запросов
-                        if stop_on_rate_limit and found == 0 and page == 0:
-                            logger.warning("Возможно достигнут лимит запросов. Прерывание.")
-                            break
-                    
-                    else:
-                        error_count += 1
-                        logger.warning(f"Не удалось загрузить страницу {page+1}")
-                    
-                    # Пауза между запросами
-                    if delay > 0:
-                        time.sleep(delay)
+                        request_count += 1
+                        
+                        if use_progress_bar:
+                            pbar.update(1)
+                            pbar.set_postfix({
+                                'Вакансии': len(all_vacancies),
+                                'Ошибки': error_count,
+                                'Страница': f"{page+1}/{pages}"
+                            })
+                        
+                        logger.debug(f"Запрос: '{search_term}', регион {area_id}, страница {page+1}")
+                        
+                        json_data = self.search_vacancies(
+                            search_text=search_term,
+                            area=area_id,
+                            page=page,
+                            per_page=per_page
+                        )
+                        
+                        if json_data:
+                            vacancies = self.parse_vacancies_page(json_data)
+                            logger.info(f"Найдено вакансий для '{search_term}': {len(vacancies)}")
+                            
+                            # Добавляем поисковый запрос к каждой вакансии
+                            for vacancy in vacancies:
+                                vacancy['search_query'] = search_term
+                                vacancy['area_id'] = area_id
+                            
+                            all_vacancies.extend(vacancies)
+                            
+                            # Проверка на последнюю страницу
+                            total_pages = json_data.get('pages', 1)
+                            found = json_data.get('found', 0)
+                            
+                            if page >= total_pages - 1:
+                                logger.info(f"Достигнута последняя страница. Всего найдено: {found} вакансий")
+                                break
+                                
+                            # Проверка на лимит запросов
+                            if stop_on_rate_limit and found == 0 and page == 0:
+                                logger.warning("Возможно достигнут лимит запросов. Прерывание.")
+                                break
+                        
+                        else:
+                            error_count += 1
+                            logger.warning(f"Не удалось загрузить страницу {page+1}")
+                        
+                        # Пауза между запросами
+                        if delay > 0:
+                            time.sleep(delay)
+        
+        except StopIteration as e:
+            logger.warning(f"Парсинг прерван: {e}")
         
         if use_progress_bar:
             pbar.close()
@@ -616,7 +681,7 @@ class HHVacancyParser:
                 logger.error(f"Не удалось сохранить даже резервную копию: {backup_error}")
                 return None, None
     
-    def get_vacancy_details(self, vacancy_id, max_retries=2):
+    def get_vacancy_details(self, vacancy_id, url, max_retries=2):
         """
         Получение детальной информации по конкретной вакансии
         
@@ -627,7 +692,7 @@ class HHVacancyParser:
         Returns:
             dict: Детальная информация о вакансии
         """
-        url = f"{self.base_url}/{vacancy_id}"
+        details = {}
         
         for attempt in range(max_retries):
             try:
@@ -636,7 +701,9 @@ class HHVacancyParser:
                 
                 if response.status_code == 200:
                     logger.info(f"Детали вакансии {vacancy_id} успешно загружены")
-                    return response.json()
+                    item = response.json()
+                    details['description'] = item['description']
+                    return details
                 elif response.status_code == 404:
                     logger.warning(f"Вакансия {vacancy_id} не найдена")
                     return None
