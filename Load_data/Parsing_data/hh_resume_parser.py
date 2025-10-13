@@ -194,10 +194,12 @@ class HHResumeParser:
         "Россия": 113
     }
 
-    def __init__(self, timeout=30, max_retries=3):
+    def __init__(self, timeout=30, max_retries=3, max_404_errors=5):
         self.timeout = timeout
         self.session = requests.Session()
         self.logger = logger
+        self.consecutive_404_errors = 0  # Счетчик последовательных ошибок 404
+        self.max_404_errors = max_404_errors  # Максимальное количество ошибок 404 перед остановкой
         
         # Настройка повторных попыток
         retry_strategy = Retry(
@@ -219,10 +221,35 @@ class HHResumeParser:
         })
         self.base_url = 'https://hh.ru'
         
-        self.logger.info(f"Парсер инициализирован: timeout={timeout}s, max_retries={max_retries}")
+        self.logger.info(f"Парсер инициализирован: timeout={timeout}s, max_retries={max_retries}, max_404_errors={max_404_errors}")
+    
+    def _check_404_limit(self):
+        """Проверка превышения лимита ошибок 404"""
+        if self.consecutive_404_errors >= self.max_404_errors:
+            self.logger.error(f"Достигнут лимит ошибок 404 ({self.max_404_errors}). Парсинг прекращен.")
+            return True
+        return False
+    
+    def _handle_404_error(self):
+        """Обработка ошибки 404 и проверка лимита"""
+        self.consecutive_404_errors += 1
+        self.logger.warning(f"Получена ошибка 404. Всего последовательных ошибок: {self.consecutive_404_errors}/{self.max_404_errors}")
         
+        if self._check_404_limit():
+            raise StopIteration("Превышен лимит ошибок 404")
+    
+    def _handle_successful_request(self):
+        """Сброс счетчика ошибок при успешном запросе"""
+        if self.consecutive_404_errors > 0:
+            self.logger.info(f"Сброс счетчика ошибок 404. Было: {self.consecutive_404_errors}")
+            self.consecutive_404_errors = 0
+
     def search_resumes(self, keywords=None, area=1, page=0, items_on_page=20, experience=None):
         """Поиск резюме по параметрам с правильными query-параметрами"""
+        # Проверка лимита ошибок перед выполнением запроса
+        if self._check_404_limit():
+            return None
+            
         params = {
             'text': keywords,
             'area': area,
@@ -260,6 +287,7 @@ class HHResumeParser:
             response = self.session.get(url, params=params, timeout=self.timeout)
             
             if response.status_code == 200:
+                self._handle_successful_request()
                 self.logger.info("Страница поиска резюме успешно загружена")
                 # Проверим наличие результатов
                 if "resume-serp__resume" in response.text:
@@ -271,19 +299,27 @@ class HHResumeParser:
                         f.write(response.text)
                 return response.text
             elif response.status_code == 404:
+                self._handle_404_error()
                 self.logger.error("Ошибка 404 - страница не найдена")
                 return None
             else:
+                self._handle_successful_request()  # Сбрасываем счетчик для других ошибок
                 self.logger.error(f"Ошибка при запросе: {response.status_code}")
                 return None
                 
         except requests.exceptions.Timeout:
+            self._handle_successful_request()  # Сбрасываем счетчик для таймаутов
             self.logger.error(f"Таймаут при запросе страницы {page}")
             return None
         except requests.exceptions.RequestException as e:
+            self._handle_successful_request()  # Сбрасываем счетчик для других ошибок сети
             self.logger.error(f"Ошибка сети при запросе: {e}")
             return None
+        except StopIteration as e:
+            # Пробрасываем исключение остановки дальше
+            raise e
         except Exception as e:
+            self._handle_successful_request()  # Сбрасываем счетчик для других ошибок
             self.logger.error(f"Неожиданная ошибка: {e}")
             return None
     
@@ -342,12 +378,17 @@ class HHResumeParser:
 
     def parse_resume_details(self, url, max_retries=2):
         """Парсинг детальной информации со страницы резюме"""
+        # Проверка лимита ошибок перед выполнением запроса
+        if self._check_404_limit():
+            return {}
+            
         for attempt in range(max_retries):
             try:
                 self.logger.info(f"Загрузка детальной страницы (попытка {attempt + 1}): {url}")
                 response = self.session.get(url, timeout=self.timeout)
                 
                 if response.status_code == 200:
+                    self._handle_successful_request()
                     soup = BeautifulSoup(response.text, 'html.parser')
                     details = {}
                     
@@ -415,15 +456,24 @@ class HHResumeParser:
                     
                     self.logger.info(f"Успешно собрано деталей: {len(details)}")
                     return details
+                elif response.status_code == 404:
+                    self._handle_404_error()
+                    self.logger.error(f"Ошибка 404 при загрузке детальной страницы")
+                    return {}
                 else:
+                    self._handle_successful_request()
                     self.logger.error(f"Ошибка загрузки страницы: {response.status_code}")
                     
             except requests.exceptions.Timeout:
+                self._handle_successful_request()
                 self.logger.error(f"Таймаут при загрузке детальной страницы (попытка {attempt + 1})")
                 if attempt < max_retries - 1:
                     time.sleep(2)  # Пауза перед повторной попыткой
                     continue
+            except StopIteration as e:
+                raise e
             except Exception as e:
+                self._handle_successful_request()
                 self.logger.error(f"Ошибка при парсинге детальной страницы (попытка {attempt + 1}): {e}")
                 if attempt < max_retries - 1:
                     time.sleep(2)
@@ -586,33 +636,46 @@ class HHResumeParser:
             
         all_resumes = []
         
-        for search_term in search_terms:
-            self.logger.info(f"Поиск по запросу: '{search_term}'")
-            for page in range(pages):
-                self.logger.info(f"Страница {page + 1}/{pages}")
-                
-                html = self.search_resumes(
-                    keywords=search_term,
-                    area=area_ids,
-                    page=page,
-                    items_on_page=items_on_page
-                )
-                
-                if html:
-                    resumes = self.parse_search_results(html)
-                    self.logger.info(f"Найдено резюме для '{search_term}': {len(resumes)}")
+        try:
+            for search_term in search_terms:
+                # Проверка лимита ошибок перед началом нового запроса
+                if self._check_404_limit():
+                    break
                     
-                    # Добавляем поисковый запрос к каждому резюме
-                    for resume in resumes:
-                        resume['search_query'] = search_term
+                self.logger.info(f"Поиск по запросу: '{search_term}'")
+                for page in range(pages):
+                    # Проверка лимита ошибок перед каждой страницей
+                    if self._check_404_limit():
+                        self.logger.warning("Прерывание парсинга из-за превышения лимита ошибок 404")
+                        break
+                        
+                    self.logger.info(f"Страница {page + 1}/{pages}")
                     
-                    all_resumes.extend(resumes)
+                    html = self.search_resumes(
+                        keywords=search_term,
+                        area=area_ids,
+                        page=page,
+                        items_on_page=items_on_page
+                    )
                     
-                    # Пауза между запросами
-                    if delay > 0:
-                        time.sleep(delay)
-                else:
-                    self.logger.warning(f"Не удалось загрузить страницу {page}, пропускаем...")
+                    if html:
+                        resumes = self.parse_search_results(html)
+                        self.logger.info(f"Найдено резюме для '{search_term}': {len(resumes)}")
+                        
+                        # Добавляем поисковый запрос к каждому резюме
+                        for resume in resumes:
+                            resume['search_query'] = search_term
+                        
+                        all_resumes.extend(resumes)
+                        
+                        # Пауза между запросами
+                        if delay > 0:
+                            time.sleep(delay)
+                    else:
+                        self.logger.warning(f"Не удалось загрузить страницу {page}, пропускаем...")
+                        
+        except StopIteration as e:
+            self.logger.warning(f"Парсинг прерван: {e}")
         
         if all_resumes:
             # Создаем DataFrame
