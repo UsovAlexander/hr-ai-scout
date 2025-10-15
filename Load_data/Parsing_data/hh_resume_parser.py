@@ -583,23 +583,27 @@ class HHResumeParser:
         self.logger.info(f"Создан DataFrame с {len(df)} записями")
         return df
 
-    def save_to_files(self, df, base_filename='resumes', include_timestamp=True):
+    def save_to_files(self, df, base_filename='resumes', resume_name='', include_timestamp=True):
         """Сохранение DataFrame в разные форматы"""
+        if df.empty or df is None:
+            self.logger.warning("Нет данных для сохранения")
+            return None
+        
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S') if include_timestamp else ''
         filename_suffix = f'_{timestamp}' if timestamp else ''
         
         try:
             # CSV
-            csv_filename = f'{base_filename}{filename_suffix}.csv'
+            csv_filename = f'{base_filename}_{resume_name}{filename_suffix}.csv'
             df.to_csv(csv_filename, index=False, encoding='utf-8-sig')
             self.logger.info(f"Данные сохранены в {csv_filename}")
             
-            # Excel
-            excel_filename = f'{base_filename}{filename_suffix}.xlsx'
-            df.to_excel(excel_filename, index=False, engine='openpyxl')
-            self.logger.info(f"Данные сохранены в {excel_filename}")
+            # # Excel
+            # excel_filename = f'{base_filename}{filename_suffix}.xlsx'
+            # df.to_excel(excel_filename, index=False, engine='openpyxl')
+            # self.logger.info(f"Данные сохранены в {excel_filename}")
             
-            return csv_filename, excel_filename
+            return csv_filename
         except Exception as e:
             self.logger.error(f"Ошибка при сохранении файлов: {e}")
             return None, None

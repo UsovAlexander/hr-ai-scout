@@ -608,7 +608,7 @@ class HHVacancyParser:
         logger.info(f"Создан DataFrame с {len(df)} вакансиями и {len(df.columns)} колонками")
         return df
     
-    def save_to_files(self, df, base_filename='vacancies', include_timestamp=True):
+    def save_to_files(self, df, base_filename='vacancies', vacancy_name='', include_timestamp=True):
         """
         Сохранение DataFrame в разные форматы
         
@@ -620,12 +620,13 @@ class HHVacancyParser:
         Returns:
             tuple: Пути к сохраненным файлам
         """
-        if df.empty:
+        if df.empty or df is None:
             logger.warning("Нет данных для сохранения")
-            return None, None
+            return None
         
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S') if include_timestamp else ''
         filename_suffix = f'_{timestamp}' if timestamp else ''
+        
         
         try:
             # Создаем копию DataFrame для безопасного сохранения
@@ -637,37 +638,37 @@ class HHVacancyParser:
                 df_save[col] = df_save[col].dt.tz_localize(None)
             
             # CSV
-            csv_filename = f'{base_filename}{filename_suffix}.csv'
+            csv_filename = f'{base_filename}_{vacancy_name}{filename_suffix}.csv'
             df_save.to_csv(csv_filename, index=False, encoding='utf-8-sig')
             logger.info(f"Данные сохранены в CSV: {csv_filename}")
             
-            # Excel
-            excel_filename = f'{base_filename}{filename_suffix}.xlsx'
+            # # Excel
+            # excel_filename = f'{base_filename}{filename_suffix}.xlsx'
             
-            # Создаем Excel writer с настройками
-            with pd.ExcelWriter(excel_filename, engine='openpyxl', datetime_format='YYYY-MM-DD HH:MM:SS') as writer:
-                df_save.to_excel(writer, index=False, sheet_name='Vacancies')
+            # # Создаем Excel writer с настройками
+            # with pd.ExcelWriter(excel_filename, engine='openpyxl', datetime_format='YYYY-MM-DD HH:MM:SS') as writer:
+            #     df_save.to_excel(writer, index=False, sheet_name='Vacancies')
                 
-                # Получаем workbook и worksheet для дополнительных настроек
-                workbook = writer.book
-                worksheet = writer.sheets['Vacancies']
+            #     # Получаем workbook и worksheet для дополнительных настроек
+            #     workbook = writer.book
+            #     worksheet = writer.sheets['Vacancies']
                 
-                # Настраиваем ширину колонок для лучшего отображения
-                for column in worksheet.columns:
-                    max_length = 0
-                    column_letter = column[0].column_letter
-                    for cell in column:
-                        try:
-                            if len(str(cell.value)) > max_length:
-                                max_length = len(str(cell.value))
-                        except:
-                            pass
-                    adjusted_width = min(max_length + 2, 50)
-                    worksheet.column_dimensions[column_letter].width = adjusted_width
+            #     # Настраиваем ширину колонок для лучшего отображения
+            #     for column in worksheet.columns:
+            #         max_length = 0
+            #         column_letter = column[0].column_letter
+            #         for cell in column:
+            #             try:
+            #                 if len(str(cell.value)) > max_length:
+            #                     max_length = len(str(cell.value))
+            #             except:
+            #                 pass
+            #         adjusted_width = min(max_length + 2, 50)
+            #         worksheet.column_dimensions[column_letter].width = adjusted_width
             
-            logger.info(f"Данные сохранены в Excel: {excel_filename}")
+            # logger.info(f"Данные сохранены в Excel: {excel_filename}")
             
-            return csv_filename, excel_filename
+            return csv_filename
             
         except Exception as e:
             logger.error(f"Ошибка при сохранении файлов: {e}")
