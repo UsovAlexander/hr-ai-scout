@@ -90,8 +90,12 @@
     cd hr-ai-scout
     ```
 
-2.  **Установите зависимости:**
+2.  **Создайте виртуальное окружение и установите зависимости:**
     ```bash
+    python3 -m venv venv_hr_ai_scout
+
+    source ./venv_hr_ai_scout/bin/activate
+    
     pip install -r requirements.txt
     ```
 
