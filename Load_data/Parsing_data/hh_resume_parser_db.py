@@ -514,7 +514,7 @@ class HHResumeParser:
         """
         Сохранение DataFrame в ClickHouse
         """
-        if df.empty:
+        if df is None or df.empty:
             print("Нет данных для сохранения в ClickHouse")
             return False
             
