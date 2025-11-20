@@ -1,0 +1,42 @@
+artifact_path: base_pipeline
+flavors:
+  python_function:
+    code: code
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.13.7
+  sklearn:
+    code: code
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.7.2
+is_signature_from_type_hint: false
+mlflow_version: 2.21.0
+model_size_bytes: 186025
+model_uuid: b50aaae3d3914dee9ca0f83cde9e30d3
+prompts: null
+run_id: b1805097d05c4688b1b4ddc22d737f73
+saved_input_example_info:
+  artifact_path: input_example.json
+  pandas_orient: split
+  serving_input_path: serving_input_example.json
+  type: dataframe
+signature:
+  inputs: '[{"type": "string", "name": "vacancy_area", "required": true}, {"type":
+    "string", "name": "vacancy_experience", "required": true}, {"type": "string",
+    "name": "vacancy_employment", "required": true}, {"type": "string", "name": "vacancy_schedule",
+    "required": true}, {"type": "double", "name": "resume_salary", "required": true},
+    {"type": "double", "name": "resume_age", "required": true}, {"type": "double",
+    "name": "resume_experience_months", "required": true}, {"type": "string", "name":
+    "resume_location", "required": true}, {"type": "string", "name": "resume_gender",
+    "required": true}, {"type": "string", "name": "resume_applicant_status", "required":
+    true}, {"type": "double", "name": "resume_last_company_experience_months", "required":
+    true}]'
+  outputs: '[{"type": "long", "required": true}]'
+  params: null
+type_hint_from_example: false
+utc_time_created: '2025-11-19 15:25:10.373361'

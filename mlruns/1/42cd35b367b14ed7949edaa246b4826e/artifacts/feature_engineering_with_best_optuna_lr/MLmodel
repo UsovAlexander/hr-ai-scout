@@ -1,0 +1,45 @@
+artifact_path: feature_engineering_with_best_optuna_lr
+flavors:
+  python_function:
+    code: code
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.13.7
+  sklearn:
+    code: code
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.7.2
+is_signature_from_type_hint: false
+mlflow_version: 2.21.0
+model_size_bytes: 309184
+model_uuid: 2e2d9ae3dc24418287a6aed45d664379
+prompts: null
+run_id: 42cd35b367b14ed7949edaa246b4826e
+saved_input_example_info:
+  artifact_path: input_example.json
+  pandas_orient: split
+  serving_input_path: serving_input_example.json
+  type: dataframe
+signature:
+  inputs: '[{"type": "string", "name": "vacancy_area", "required": true}, {"type":
+    "string", "name": "vacancy_experience", "required": true}, {"type": "string",
+    "name": "vacancy_employment", "required": true}, {"type": "string", "name": "vacancy_schedule",
+    "required": true}, {"type": "double", "name": "resume_salary", "required": true},
+    {"type": "double", "name": "resume_age", "required": true}, {"type": "double",
+    "name": "resume_experience_months", "required": true}, {"type": "string", "name":
+    "resume_location", "required": true}, {"type": "string", "name": "resume_gender",
+    "required": true}, {"type": "string", "name": "resume_applicant_status", "required":
+    true}, {"type": "double", "name": "resume_last_company_experience_months", "required":
+    true}, {"type": "long", "name": "location_matching", "required": true}, {"type":
+    "long", "name": "resume_skill_count_in_vacancy", "required": true}, {"type": "double",
+    "name": "last_position_in_vacancy", "required": true}, {"type": "double", "name":
+    "similarity_score_tfidf", "required": true}]'
+  outputs: '[{"type": "long", "required": true}]'
+  params: null
+type_hint_from_example: false
+utc_time_created: '2025-11-20 08:03:08.593621'
