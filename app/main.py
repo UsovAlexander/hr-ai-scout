@@ -1,22 +1,30 @@
-from fastapi import FastAPI, HTTPException, status, Depends
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
-from typing import Optional, Literal, List, AsyncGenerator
-from contextlib import asynccontextmanager
-from enum import Enum
-from datetime import datetime
-from pathlib import Path
-from sqlalchemy import String, Integer, Float, DateTime, select
-from sqlalchemy.ext.asyncio import (create_async_engine, AsyncSession, async_sessionmaker, AsyncEngine)
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+import os
 import re
 import time
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from enum import Enum
+from pathlib import Path
+from typing import AsyncGenerator, Dict, List, Optional
 import pickle
 import pandas as pd
 import numpy as np
 import uvicorn
-import os
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from jose import JWTError, jwt
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from sqlalchemy import DateTime, Float, Integer, String, delete, select
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+SECRET_KEY = os.environ.get("KEY", "test")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE_URL = f"sqlite+aiosqlite:///{BASE_DIR}/hr_scout_history.db"
@@ -61,6 +69,7 @@ class PredictionHistory(Base):
     prediction: Mapped[int] = mapped_column(Integer, nullable=False)
     probability: Mapped[float] = mapped_column(Float, nullable=False)
     processing_time: Mapped[float] = mapped_column(Float, nullable=False)
+
 
     def __repr__(self) -> str:
         return f"<PredictionHistory(id={self.id}, prediction={self.prediction}, created_at={self.created_at})>"
@@ -194,6 +203,103 @@ class PredictionResponse(BaseModel):
                 "probability": 0.85
             }
         }
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
+    is_admin: Optional[bool] = False
+
+
+class User(BaseModel):
+    username: str
+    is_admin: bool = False
+
+
+class UserInDB(User):
+    password: str
+
+
+fake_users_db: Dict[str, Dict] = {
+    "admin": {
+        "user": "test",
+        "password": "test",
+        "is_admin": True
+    }
+}
+
+
+def verify_password(plain_password, stored_password):
+    return plain_password == stored_password
+
+
+def get_user(db, username: str):
+    user = db.get(username)
+    if not user:
+        return None
+    return UserInDB(**user)
+
+
+def authenticate_user(db, username: str, password: str):
+    user = get_user(db, username)
+    if not user:
+        return False
+    if not verify_password(password, user.password):
+        return False
+    return user
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        is_admin = payload.get("is_admin", False)
+        if username is None:
+            raise credentials_exception
+        token_data = TokenData(username=username, is_admin=is_admin)
+    except JWTError:
+        raise credentials_exception
+    user = get_user(fake_users_db, username=token_data.username)
+    if user is None:
+        raise credentials_exception
+    return user
+
+
+async def get_current_active_admin_user(current_user: User = Depends(get_current_user)):
+    if not getattr(current_user, "is_admin", False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
+    return current_user
+
+
+@app.post("/token", response_model=Token, tags=["Auth"]) 
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password",
+                            headers={"WWW-Authenticate": "Bearer"})
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username, "is_admin": user.is_admin},
+        expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
 
 
 class HistoryResponse(BaseModel):
@@ -399,7 +505,8 @@ async def forward(
 async def get_history(
     skip: int = 0,
     limit: int = 100,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin_user)
 ):
     result = await db.execute(
         select(PredictionHistory)
@@ -412,8 +519,17 @@ async def get_history(
     return list(history)
 
 
+@app.delete("/history", status_code=status.HTTP_204_NO_CONTENT, tags=["History"])
+async def delete_history(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin_user)
+):
+    await db.execute(delete(PredictionHistory))
+    await db.commit()
+    return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
+
 @app.get("/stats", tags=["Statistics"])
-async def get_stats(db: AsyncSession = Depends(get_db)):
+async def get_stats(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_active_admin_user)):
     result = await db.execute(select(PredictionHistory))
     records = result.scalars().all()
     
