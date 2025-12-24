@@ -84,15 +84,8 @@ async def lifespan(app: FastAPI):
         os.path.dirname(__file__),
         "feature_engineering_with_best_optuna_lr.pkl"
     )
-    # try:
     with open(model_path, 'rb') as f:
         app.state.model = pickle.load(f)
-    # except FileNotFoundError:
-    #     print("Ошибка файл модели не найден")
-    #     raise
-    # except Exception:
-    #     print("Ошибка при загрузке модели")
-    #     raise
     
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
