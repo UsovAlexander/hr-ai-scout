@@ -21,9 +21,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 SECRET_KEY = os.environ.get("KEY", "test")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -87,15 +84,15 @@ async def lifespan(app: FastAPI):
         os.path.dirname(__file__),
         "feature_engineering_with_best_optuna_lr.pkl"
     )
-    try:
-        with open(model_path, 'rb') as f:
-            app.state.model = pickle.load(f)
-    except FileNotFoundError:
-        print("Ошибка файл модели не найден")
-        raise
-    except Exception:
-        print("Ошибка при загрузке модели")
-        raise
+    # try:
+    with open(model_path, 'rb') as f:
+        app.state.model = pickle.load(f)
+    # except FileNotFoundError:
+    #     print("Ошибка файл модели не найден")
+    #     raise
+    # except Exception:
+    #     print("Ошибка при загрузке модели")
+    #     raise
     
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -225,8 +222,8 @@ class UserInDB(User):
 
 
 fake_users_db: Dict[str, Dict] = {
-    "admin": {
-        "user": "test",
+    "test": {
+        "username": "test",
         "password": "test",
         "is_admin": True
     }
@@ -255,9 +252,9 @@ def authenticate_user(db, username: str, password: str):
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=30))
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm="HS256")
     return encoded_jwt
 
 
@@ -268,7 +265,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
         username: str = payload.get("sub")
         is_admin = payload.get("is_admin", False)
         if username is None:
@@ -288,13 +285,13 @@ async def get_current_active_admin_user(current_user: User = Depends(get_current
     return current_user
 
 
-@app.post("/token", response_model=Token, tags=["Auth"]) 
+@app.post("/token", response_model=Token, tags=["Auth"])
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
     user = authenticate_user(fake_users_db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password",
                             headers={"WWW-Authenticate": "Bearer"})
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token_expires = timedelta(minutes=30)
     access_token = create_access_token(
         data={"sub": user.username, "is_admin": user.is_admin},
         expires_delta=access_token_expires
