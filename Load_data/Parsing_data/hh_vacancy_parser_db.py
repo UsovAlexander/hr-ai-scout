@@ -334,7 +334,7 @@ class HHVacancyParser:
             return text
         return re.sub(r'<[^>]+>', '', text)
     
-    def load_vacancies(self, search_terms, areas, pages=1, per_page=100, delay=1, 
+    def load_vacancies(self, search_terms, areas, pages=1, items_on_page=100, delay=1, 
                       use_progress_bar=True, stop_on_rate_limit=True):
         area_ids = []
         invalid_areas = []
@@ -380,7 +380,7 @@ class HHVacancyParser:
                             pbar.update(1)
                             pbar.set_postfix({
                                 'Вакансии': len(all_vacancies),
-                                'Ошибки': error_count,
+                                'Запрос': search_term[:20],
                                 'Страница': f"{page+1}/{pages}"
                             })
                         
@@ -388,7 +388,7 @@ class HHVacancyParser:
                             search_text=search_term,
                             area=area_id,
                             page=page,
-                            per_page=per_page
+                            per_page=items_on_page
                         )
                         
                         if json_data:
@@ -454,8 +454,6 @@ class HHVacancyParser:
         
         df['parsed_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
-        df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype('int64')
-        
         date_columns = ['published_at', 'created_at']
         for col in date_columns:
             if col in df.columns:
@@ -503,7 +501,7 @@ class HHVacancyParser:
         """
         Сохранение DataFrame в ClickHouse
         """
-        if df.empty:
+        if df is None or df.empty:
             print("Нет данных для сохранения в ClickHouse")
             return False
             
