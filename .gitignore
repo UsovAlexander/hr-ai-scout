@@ -11,3 +11,4 @@ mlflow.db
 #mlruns
 local.study.db
 venv_hr_ai_scout
+*.db
