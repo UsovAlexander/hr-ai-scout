@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from enum import Enum
@@ -16,6 +17,17 @@ from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+import ast
+import scipy.sparse as sp
+from sklearn.metrics.pairwise import cosine_similarity
+from modules import (
+    tokenize_and_lemmatize,
+    compute_location_matching,
+    resume_skill_count_in_vacancy,
+    last_position_in_vacancy,
+    compute_similarity_features,
+    FEATURES
+)
 from sqlalchemy import DateTime, Float, Integer, String, delete, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -48,6 +60,7 @@ class PredictionHistory(Base):
     
     id: Mapped[int] = mapped_column(Integer,primary_key=True,index=True,autoincrement=True)
     created_at: Mapped[datetime] = mapped_column(DateTime,default=datetime.now,nullable=False)
+    resume_id: Mapped[int] = mapped_column(Integer, nullable=False)
     vacancy_area: Mapped[str] = mapped_column(String(200), nullable=False)
     vacancy_experience: Mapped[str] = mapped_column(String(100), nullable=False)
     vacancy_employment: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -80,13 +93,23 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    model_path = os.path.join(
-        os.path.dirname(__file__),
-        "feature_engineering_with_best_optuna_lr.pkl"
-    )
+    base_dir = Path(__file__).resolve().parent
+
+    model_path = base_dir / "feature_engineering_with_best_optuna_lr.pkl"
+    tfidf_path = base_dir / "tfidf_vectorizer.pkl"
+    embeddings_path = base_dir / "experience_embeddings.npz"
+    resumes_path = base_dir / "df_resumes.csv"
+
     with open(model_path, 'rb') as f:
         app.state.model = pickle.load(f)
-    
+
+    with open(tfidf_path, 'rb') as f:
+        app.state.tfidf_vectorizer = pickle.load(f)
+
+    app.state.experience_embeddings = sp.load_npz(str(embeddings_path))
+
+    app.state.df_resumes = pd.read_csv(resumes_path)
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
@@ -127,59 +150,40 @@ class VacancySchedule(str, Enum):
     shift = "Сменный график"
     vaht = "Вахтовый метод"
 
-class CandidateInput(BaseModel):
+class VacancyInput(BaseModel):
+    vacancy_name: Optional[str] = Field(None, description="Название вакансии")
     vacancy_area: str = Field(..., description="Город вакансии")
     vacancy_experience: VacancyExperience = Field(..., description="Требуемый опыт")
     vacancy_employment: VacancyEmployment = Field(..., description="Тип занятости")
     vacancy_schedule: VacancySchedule = Field(..., description="График работы")
-    resume_location: str = Field(..., description="Город кандидата")
-    resume_gender: ResumeGender = Field(..., description="Пол кандидата")
-    resume_applicant_status: ResumeApplicantStatus = Field(..., description="Статус поиска работы")
-    resume_salary: float = Field(..., ge=0, le=1e7, description="Ожидаемая зарплата")
-    resume_age: float = Field(..., ge=0, le=90, description="Возраст кандидата")
-    resume_experience_months: float = Field(..., ge=0, le=720, description="Общий опыт в месяцах")
-    resume_last_company_experience_months: float = Field(..., ge=0, le=720, description="Опыт в последней компании")
-    location_matching: float = Field(..., ge=0, le=1, description="Совпадение локации (0 или 1)")
-    resume_skill_count_in_vacancy: float = Field(..., ge=0, le=10000, description="Количество навыков, которые совпадают между резюме и вакансией")
-    last_position_in_vacancy: float = Field(..., ge=0, le=1, description="Доля слов, которые совпадают с последней позиции с вакансией")
-    similarity_score_tfidf: float = Field(..., ge=0, le=1, description="Косинусное сходство TF-IDF")
+    vacancy_description: str = Field(..., description="Описание вакансии")
 
-    @field_validator('vacancy_area', 'resume_location')
+    @field_validator('vacancy_area')
     @classmethod
     def check_cyrillic_only(cls, v: str, info) -> str:
         if not re.match(r'^[а-яА-ЯёЁ\s\-()]+$', v):
             raise ValueError(f'{info.field_name} можно написать только на кириллице')
         return v
 
-    @model_validator(mode='after')
-    def check_experience_consistency(self) -> 'CandidateInput':
-
-        if self.resume_last_company_experience_months > self.resume_experience_months:
-            raise ValueError(
-                'Последний опыт не может превышать общий опыт'
-            )
-        return self
-
     class Config:
         json_schema_extra = {
             "example": {
+                "vacancy_name": "Аналитик данных/data analyst",
                 "vacancy_area": "Москва",
                 "vacancy_experience": "От 1 года до 3 лет",
                 "vacancy_employment": "Полная занятость",
                 "vacancy_schedule": "Полный день",
-                "resume_location": "Москва",
-                "resume_gender": "Мужчина",
-                "resume_applicant_status": "Активно ищет работу",
-                "resume_salary": 80000.0,
-                "resume_age": 25.0,
-                "resume_experience_months": 24.0,
-                "resume_last_company_experience_months": 12.0,
-                "location_matching": 1.0,
-                "resume_skill_count_in_vacancy": 5.0,
-                "last_position_in_vacancy": 0.6,
-                "similarity_score_tfidf": 0.75
+                "vacancy_description": "Твои задачи: Формирование баз данных, аналитика, SQL, Python"
             }
         }
+
+
+class TopResume(BaseModel):
+    resume_id: int
+    y_pred_proba: float
+
+    class Config:
+        schema_extra = {"example": {"resume_id": 116651504, "y_pred_proba": 0.999}}
 
 
 class PredictionResponse(BaseModel):
@@ -295,6 +299,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 class HistoryResponse(BaseModel):
     id: int
     created_at: datetime
+    resume_id: int
     vacancy_area: str
     vacancy_experience: str
     vacancy_employment: str
@@ -319,7 +324,7 @@ class HistoryResponse(BaseModel):
 async def validation_exception_handler(request, exc: RequestValidationError):
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
-        content={"detail": "bad request"}
+        content={"detail": "модель не смогла обработать данные"}
     )
 
 
@@ -348,76 +353,59 @@ async def health_check():
 @app.get("/validation/demo", tags=["Documentation"])
 async def validation_demo():
     return {
-        "message": "Правила отправки значений",
+        "message": "Правила отправки значений для POST /forward",
+        "description": "API принимает описание вакансии и возвращает топ-10 подходящих резюме из базы",
         "pydantic_version": "2.5.0",
-        "validation_rules": {
+        "input_fields": {
+            "vacancy_name": {
+                "type": "string",
+                "required": False,
+                "description": "Название вакансии"
+            },
             "vacancy_area": {
                 "type": "string",
-                "constraint": "Можно написать только на кириллице"
+                "required": True,
+                "constraint": "Можно написать только на кириллице",
+                "description": "Город вакансии"
             },
             "vacancy_experience": {
                 "type": "enum",
-                "allowed_values": ["Нет опыта", "От 1 года до 3 лет", "От 3 до 6 лет", "Более 6 лет"]
+                "required": True,
+                "allowed_values": ["Нет опыта", "От 1 года до 3 лет", "От 3 до 6 лет", "Более 6 лет"],
+                "description": "Требуемый опыт работы"
             },
             "vacancy_employment": {
                 "type": "enum",
-                "allowed_values": ["Полная занятость", "Проектная работа", "Частичная занятость"]
+                "required": True,
+                "allowed_values": ["Полная занятость", "Частичная занятость", "Проектная работа"],
+                "description": "Тип занятости"
             },
             "vacancy_schedule": {
                 "type": "enum",
-                "allowed_values": ["Удаленная работа", "Полный день", "Гибкий график", "Сменный график", "Вахтовый метод"]
+                "required": True,
+                "allowed_values": ["Полный день", "Удаленная работа", "Гибкий график", "Сменный график", "Вахтовый метод"],
+                "description": "График работы"
             },
-            "resume_location": {
+            "vacancy_description": {
                 "type": "string",
-                "constraint": "Можно написать только на кириллице"
-            },
-            "resume_gender": {
-                "type": "enum",
-                "allowed_values": ["Мужчина", "Женщина", "Неизвестно"]
-            },
-            "resume_applicant_status": {
-                "type": "enum",
-                "allowed_values": ["Активно ищет работу", "Рассматривает предложения"]
-            },
-            "resume_salary": {
-                "type": "float",
-                "constraint": "Значения от 0 до 10 000 000"
-            },
-            "resume_age": {
-                "type": "float",
-                "constraint": "Значения от 0 до 90"
-            },
-            "resume_experience_months": {
-                "type": "float",
-                "constraint": "Значения от 0 до 720"
-            },
-            "resume_last_company_experience_months": {
-                "type": "float",
-                "constraint": "Значения от 0 до 720 и не может превышать resume_experience_months"
-            },
-            "location_matching": {
-                "type": "float",
-                "constraint": "Бинарные значения - 1 или 0"
-            },
-            "resume_skill_count_in_vacancy": {
-                "type": "float",
-                "constraint": "Значения от 0 до 10000"
-            },
-            "last_position_in_vacancy": {
-                "type": "float",
-                "constraint": "Значения от 0 до 1"
-            },
-            "similarity_score_tfidf": {
-                "type": "float",
-                "constraint": "Значения от 0 до 1"
+                "required": True,
+                "description": "Полное описание вакансии (требования, задачи, условия)"
             }
+        },
+        "output_format": {
+            "type": "array",
+            "items": {
+                "resume_id": "integer - ID резюме",
+                "y_pred_proba": "float - вероятность подходящести (0-1)"
+            },
+            "description": "Массив из топ-10 резюме, отсортированных по убыванию вероятности"
         }
     }
 
 
-@app.post("/forward", response_model=PredictionResponse, tags=["Prediction"])
+@app.post("/forward", response_model=List[TopResume], tags=["Prediction"])
 async def forward(
-    data: CandidateInput,
+    data: VacancyInput,
     db: AsyncSession = Depends(get_db)
 ):
     try:
@@ -429,62 +417,72 @@ async def forward(
                 detail="модель не смогла обработать данные"
             )
 
-        input_dict = {
-            'vacancy_area': data.vacancy_area,
-            'vacancy_experience': data.vacancy_experience,
-            'vacancy_employment': data.vacancy_employment,
-            'vacancy_schedule': data.vacancy_schedule,
-            'resume_salary': data.resume_salary,
-            'resume_age': data.resume_age,
-            'resume_experience_months': data.resume_experience_months,
-            'resume_location': data.resume_location,
-            'resume_gender': data.resume_gender,
-            'resume_applicant_status': data.resume_applicant_status,
-            'resume_last_company_experience_months': data.resume_last_company_experience_months,
-            'location_matching': data.location_matching,
-            'resume_skill_count_in_vacancy': data.resume_skill_count_in_vacancy,
-            'last_position_in_vacancy': data.last_position_in_vacancy,
-            'similarity_score_tfidf': data.similarity_score_tfidf
-        }
-        
-        input_df = pd.DataFrame([input_dict])
+        if not hasattr(app.state, 'df_resumes'):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="модель не смогла обработать данные"
+            )
 
-        prediction = app.state.model.predict(input_df)[0]
-        probability = app.state.model.predict_proba(input_df)[0]
+        input_dict = {
+            'vacancy_name': data.vacancy_name,
+            'vacancy_area': data.vacancy_area,
+            'vacancy_experience': data.vacancy_experience.value,
+            'vacancy_employment': data.vacancy_employment.value,
+            'vacancy_schedule': data.vacancy_schedule.value,
+            'vacancy_description': data.vacancy_description
+        }
+
+        df_vacancy = pd.DataFrame([input_dict])
+        df = df_vacancy.merge(app.state.df_resumes, how='cross')
+
+        df['location_matching'] = df.apply(compute_location_matching, axis=1)
+        df['resume_skill_count_in_vacancy'] = df.apply(resume_skill_count_in_vacancy, axis=1)
+        df['last_position_in_vacancy'] = df.apply(last_position_in_vacancy, axis=1)
+
+        df = compute_similarity_features(df, app.state.tfidf_vectorizer, app.state.experience_embeddings)
+
+        X = df[FEATURES]
+        y_pred = app.state.model.predict(X)
+        y_pred_proba = app.state.model.predict_proba(X)[:, 1]
+
+        df['y_pred'] = y_pred
+        df['y_pred_proba'] = y_pred_proba
 
         processing_time = time.time() - start_time
 
-        history_record = PredictionHistory(
-            vacancy_area=data.vacancy_area,
-            vacancy_experience=data.vacancy_experience.value,
-            vacancy_employment=data.vacancy_employment.value,
-            vacancy_schedule=data.vacancy_schedule.value,
-            resume_location=data.resume_location,
-            resume_gender=data.resume_gender.value,
-            resume_applicant_status=data.resume_applicant_status.value,
-            resume_salary=data.resume_salary,
-            resume_age=data.resume_age,
-            resume_experience_months=data.resume_experience_months,
-            resume_last_company_experience_months=data.resume_last_company_experience_months,
-            location_matching=data.location_matching,
-            resume_skill_count_in_vacancy=data.resume_skill_count_in_vacancy,
-            last_position_in_vacancy=data.last_position_in_vacancy,
-            similarity_score_tfidf=data.similarity_score_tfidf,
-            prediction=int(prediction),
-            probability=float(probability[1]),
-            processing_time=processing_time
-        )
-        
-        db.add(history_record)
-        await db.commit()
-        await db.refresh(history_record)
+        top = df.sort_values('y_pred_proba', ascending=False).head(10)
 
-        return PredictionResponse(
-            prediction=int(prediction),
-            probability=float(probability[1])
-        )
-    
-    except Exception as e:
+        for _, row in top.iterrows():
+            history_record = PredictionHistory(
+                resume_id=int(row.get('resume_id')),
+                vacancy_area=row['vacancy_area'],
+                vacancy_experience=row['vacancy_experience'],
+                vacancy_employment=row['vacancy_employment'],
+                vacancy_schedule=row['vacancy_schedule'],
+                resume_location=row.get('resume_location', ''),
+                resume_gender=row.get('resume_gender', ''),
+                resume_applicant_status=row.get('resume_applicant_status', ''),
+                resume_salary=float(row.get('resume_salary') or 0.0),
+                resume_age=float(row.get('resume_age') or 0.0),
+                resume_experience_months=float(row.get('resume_experience_months') or 0.0),
+                resume_last_company_experience_months=float(row.get('resume_last_company_experience_months') or 0.0),
+                location_matching=float(row.get('location_matching') or 0.0),
+                resume_skill_count_in_vacancy=float(row.get('resume_skill_count_in_vacancy') or 0.0),
+                last_position_in_vacancy=float(row.get('last_position_in_vacancy') or 0.0),
+                similarity_score_tfidf=float(row.get('similarity_score_tfidf') or 0.0),
+                prediction=int(row.get('y_pred') or 0),
+                probability=float(row.get('y_pred_proba') or 0.0),
+                processing_time=processing_time
+            )
+            db.add(history_record)
+            await db.commit()
+            await db.refresh(history_record)
+
+        result = [TopResume(resume_id=int(r.resume_id), y_pred_proba=float(r.y_pred_proba)) for _, r in top.iterrows()]
+
+        return result
+
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="модель не смогла обработать данные"
