@@ -452,6 +452,9 @@ async def forward(
 
         top = df.sort_values('y_pred_proba', ascending=False).head(10)
 
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
         for _, row in top.iterrows():
             history_record = PredictionHistory(
                 resume_id=int(row.get('resume_id')),

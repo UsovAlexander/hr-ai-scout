@@ -2,6 +2,7 @@ import nltk
 import pymorphy3
 from nltk.corpus import stopwords
 from gensim.utils import simple_preprocess
+import numpy as np
 
 try:
     nltk.data.find('corpora/stopwords')
@@ -65,33 +66,31 @@ def last_position_in_vacancy(row):
     return c / len(bow)
 
 
-def calculate_cosine_similarity(vacancy_embedding, experience_embeddings):
-    """Вычисление косинусного сходства"""
+def calculate_cosine_similarity(vacancy_embedding, experience_embeddings, num_resumes):
+
     from sklearn.metrics.pairwise import cosine_similarity
-    similarities = []
     
-    for i in range(experience_embeddings.shape[0]):
-        exp_row = experience_embeddings[i]
-        
-        similarity = cosine_similarity(vacancy_embedding[0], exp_row)[0][0]
-        similarities.append(similarity)
+    max_index = min(experience_embeddings.shape[0], num_resumes)
+    exp_subset = experience_embeddings[:max_index]
+    similarities = cosine_similarity(vacancy_embedding, exp_subset).flatten().tolist()
+    
+    if len(similarities) < num_resumes:
+        avg_similarity = np.mean(similarities) if similarities else 0.0
+        similarities.extend([avg_similarity] * (num_resumes - len(similarities)))
     
     return similarities
 
 
 def compute_similarity_features(df, tfidf_vectorizer, experience_embeddings):
-    """Вычисление similarity_score_tfidf с обработкой несоответствия размеров"""
+
     vacancy_description = df['vacancy_description'].unique().tolist()
     vacancy_embedding = tfidf_vectorizer.transform(vacancy_description)
     
-    similarity_scores = calculate_cosine_similarity(vacancy_embedding, experience_embeddings)
-    
-    # Временное решение для несоответствия размеров
-    if len(similarity_scores) != len(df):
-        if len(similarity_scores) > len(df):
-            similarity_scores = similarity_scores[:len(df)]
-        else:
-            similarity_scores = similarity_scores + [0.0] * (len(df) - len(similarity_scores))
+    similarity_scores = calculate_cosine_similarity(
+        vacancy_embedding, 
+        experience_embeddings, 
+        num_resumes=len(df)
+    )
     
     df['similarity_score_tfidf'] = similarity_scores
     return df
