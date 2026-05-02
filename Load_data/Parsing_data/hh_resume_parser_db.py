@@ -515,7 +515,8 @@ class HHResumeParser:
                 'gender': resume.get('gender', ''),
                 'applicant_status': resume.get('applicant_status', ''),
                 'search_query': resume.get('search_query', ''),
-                'parsed_date': _now_msk()
+                'source':       'hh.ru',
+                'parsed_date':  _now_msk()
             }
             simplified_resumes.append(simple_resume)
         
