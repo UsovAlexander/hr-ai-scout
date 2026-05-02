@@ -5,14 +5,23 @@ import re
 import pandas as pd
 import numpy as np
 from datetime import datetime
+from zoneinfo import ZoneInfo
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 from tqdm import tqdm
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+_MSK = ZoneInfo('Europe/Moscow')
+
+
+def _now_msk() -> str:
+    return datetime.now(_MSK).strftime('%Y-%m-%d %H:%M:%S')
 from clickhouse_driver import Client as ClickhouseClient
 
 class HHVacancyParser:
     """
-    Парсер вакансий с сайта hh.ru через API
+    Парсер вакансий с сайта hh.ru (HTML-скрапинг)
     """
     
     # Словарь регионов HH
@@ -171,19 +180,20 @@ class HHVacancyParser:
     }
 
     def __init__(self, timeout=30, max_retries=3, max_404_errors=5):
-        self.base_url = 'https://api.hh.ru/vacancies'
+        self.base_url = 'https://hh.ru'
+        self.search_url = 'https://hh.ru/search/vacancy'
         self.timeout = timeout
         self.session = requests.Session()
         self.consecutive_404_errors = 0
         self.max_404_errors = max_404_errors
-        
+
         retry_strategy = Retry(
             total=max_retries,
             backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["GET"],
         )
-        
+
         adapter = HTTPAdapter(
             max_retries=retry_strategy,
             pool_connections=10,
@@ -191,11 +201,13 @@ class HHVacancyParser:
         )
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
-        
+
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': 'https://hh.ru/search/vacancy',
         })
     
     def _check_404_limit(self):
@@ -212,123 +224,167 @@ class HHVacancyParser:
         if self.consecutive_404_errors > 0:
             self.consecutive_404_errors = 0
 
-    def search_vacancies(self, search_text='Аналитик данных', area=1, page=0, per_page=100):
+    def search_vacancies(self, search_text='Аналитик данных', area=1, page=0, per_page=20):
         if self._check_404_limit():
             return None
-            
+
         params = {
             'text': search_text,
             'area': area,
             'page': page,
-            'per_page': per_page
+            'per_page': per_page,
         }
-        
+
         try:
             response = self.session.get(
-                self.base_url, 
-                params=params, 
+                self.search_url,
+                params=params,
                 timeout=self.timeout,
                 allow_redirects=True
             )
-            
+
             if response.status_code == 200:
                 self._handle_successful_request()
-                return response.json()
-            elif response.status_code == 400:
-                self._handle_successful_request()
-                return None
-            elif response.status_code == 403:
-                self._handle_successful_request()
-                return None
+                return response.text
             elif response.status_code == 404:
                 self._handle_404_error()
                 return None
             else:
                 self._handle_successful_request()
+                print(f"[{response.status_code}] {response.text[:200]}")
                 return None
-                
+
         except requests.exceptions.Timeout:
             self._handle_successful_request()
             return None
         except requests.exceptions.ConnectionError:
             self._handle_successful_request()
             return None
-        except requests.exceptions.RequestException:
-            self._handle_successful_request()
-            return None
         except StopIteration as e:
             raise e
-        except json.JSONDecodeError:
-            self._handle_successful_request()
-            return None
         except Exception:
             self._handle_successful_request()
             return None
-    
-    def parse_vacancies_page(self, json_data):
-        vacancies = []
-        
-        if not json_data:
-            return vacancies
-        
-        if 'items' not in json_data:
-            return vacancies
-        
-        items = json_data['items']
-        if not items:
-            return vacancies
-        
-        for item in items:
-            try:
-                vacancy = {
-                    'id': item.get('id', ''),
-                    'name': item.get('name', ''),
-                    'area': item.get('area', {}).get('name', ''),
-                    'url': item.get('url', ''),
-                    'alternate_url': item.get('alternate_url', ''),
-                    'requirement': item.get('snippet', {}).get('requirement', ''),
-                    'responsibility': item.get('snippet', {}).get('responsibility', ''),
-                    'employer': item.get('employer', {}).get('name', ''),
-                    'experience': item.get('experience', {}).get('name', ''),
-                    'employment': item.get('employment', {}).get('name', ''),
-                    'schedule': item.get('schedule', {}).get('name', ''),
-                    'published_at': item.get('published_at', ''),
-                    'created_at': item.get('created_at', ''),
-                }
-                
-                salary = item.get('salary')
-                if salary and isinstance(salary, dict):
-                    vacancy.update({
-                        'salary_from': salary.get('from'),
-                        'salary_to': salary.get('to'),
-                        'salary_currency': salary.get('currency'),
-                        'salary_gross': salary.get('gross')
-                    })
-                else:
-                    vacancy.update({
-                        'salary_from': None,
-                        'salary_to': None,
-                        'salary_currency': None,
-                        'salary_gross': None
-                    })
 
-                details = self.get_vacancy_details(vacancy['id'], vacancy['url'])
-                vacancy.update(details)
-                
-                if vacancy['requirement']:
-                    vacancy['requirement'] = self._clean_html_tags(vacancy['requirement'])
-                if vacancy['responsibility']:
-                    vacancy['responsibility'] = self._clean_html_tags(vacancy['responsibility'])
-                if vacancy['description']:
-                    vacancy['description'] = self._clean_html_tags(vacancy['description'])
-                
+    def parse_vacancies_page(self, html):
+        if not html:
+            return []
+
+        soup = BeautifulSoup(html, 'html.parser')
+        vacancies = []
+
+        vacancy_elements = soup.find_all(
+            ['div', 'article'],
+            attrs={'data-qa': re.compile(r'^vacancy-serp__vacancy')}
+        )
+
+        for element in vacancy_elements:
+            vacancy = self._parse_vacancy_card(element)
+            if vacancy:
                 vacancies.append(vacancy)
-                
-            except Exception:
-                continue
-        
+
         return vacancies
+
+    def _parse_vacancy_card(self, element):
+        try:
+            vacancy = {
+                'salary_from': None, 'salary_to': None,
+                'salary_currency': None, 'salary_gross': None,
+                'requirement': '', 'responsibility': '',
+                'experience': '', 'employment': '', 'schedule': '',
+                'area': '', 'employer': '',
+                'published_at': None, 'created_at': None,
+                'description': '',
+            }
+
+            title_link = element.find('a', {'data-qa': 'serp-item__title'})
+            if not title_link:
+                return None
+
+            href = title_link.get('href', '')
+            match = re.search(r'/vacancy/(\d+)', href)
+            if not match:
+                return None
+
+            vacancy['id'] = match.group(1)
+            vacancy['url'] = f"{self.base_url}/vacancy/{vacancy['id']}"
+            vacancy['alternate_url'] = vacancy['url']
+            vacancy['name'] = title_link.get_text(strip=True)
+
+            employer_elem = (
+                element.find('a', {'data-qa': 'vacancy-serp__vacancy-employer'}) or
+                element.find('span', {'data-qa': 'vacancy-serp__vacancy-employer'})
+            )
+            if employer_elem:
+                vacancy['employer'] = employer_elem.get_text(strip=True)
+
+            # area — span, не div (Magritte)
+            area_elem = element.find('span', {'data-qa': 'vacancy-serp__vacancy-address'})
+            if area_elem:
+                vacancy['area'] = area_elem.get_text(strip=True)
+
+            # experience — динамический суффикс data-qa
+            exp_elem = element.find('span', attrs={'data-qa': re.compile(r'^vacancy-serp__vacancy-work-experience')})
+            if exp_elem:
+                vacancy['experience'] = exp_elem.get_text(strip=True)
+
+            # salary, employment, schedule, description, published_at — со страницы вакансии
+            details = self.get_vacancy_details(vacancy['id'], vacancy['url'])
+            if details:
+                vacancy.update(details)
+
+            time.sleep(1)
+            return vacancy
+
+        except Exception:
+            return None
+
+    def _parse_salary(self, salary_text):
+        result = {'salary_from': None, 'salary_to': None, 'salary_currency': None, 'salary_gross': None}
+        if not salary_text:
+            return result
+
+        # Определяем валюту
+        if '₽' in salary_text or 'руб' in salary_text.lower():
+            result['salary_currency'] = 'RUR'
+        elif '$' in salary_text or 'USD' in salary_text:
+            result['salary_currency'] = 'USD'
+        elif '€' in salary_text or 'EUR' in salary_text:
+            result['salary_currency'] = 'EUR'
+
+        # Извлекаем числа (убираем пробелы внутри чисел)
+        numbers = [int(re.sub(r'\s', '', m)) for m in re.findall(r'\d[\d\s]*\d|\d', salary_text)
+                   if re.sub(r'\s', '', m).isdigit()]
+
+        lower = salary_text.lower()
+        if 'от' in lower and 'до' in lower and len(numbers) >= 2:
+            result['salary_from'] = float(numbers[0])
+            result['salary_to'] = float(numbers[1])
+        elif 'от' in lower and len(numbers) >= 1:
+            result['salary_from'] = float(numbers[0])
+        elif 'до' in lower and len(numbers) >= 1:
+            result['salary_to'] = float(numbers[0])
+        elif len(numbers) >= 1:
+            result['salary_from'] = float(numbers[0])
+
+        return result
     
+    def _map_schedule(self, raw):
+        """Маппинг Magritte-значений формата работы в исходные категории HH.ru."""
+        if not raw:
+            return ''
+        # Нормализуем все виды пробелов (включая  ) перед сравнением
+        t = re.sub(r'\s+', ' ', raw).lower()
+        if 'сменн' in t:
+            return 'Сменный график'
+        if 'гибрид' in t or ('удал' in t and ('или' in t or ', ' in t)):
+            return 'Гибкий график'
+        if 'удал' in t:
+            return 'Удаленная работа'
+        if 'на месте' in t or 'офис' in t:
+            return 'Полный день'
+        return raw
+
     def _clean_html_tags(self, text):
         if not text:
             return text
@@ -384,34 +440,33 @@ class HHVacancyParser:
                                 'Страница': f"{page+1}/{pages}"
                             })
                         
-                        json_data = self.search_vacancies(
+                        html = self.search_vacancies(
                             search_text=search_term,
                             area=area_id,
                             page=page,
                             per_page=items_on_page
                         )
-                        
-                        if json_data:
-                            vacancies = self.parse_vacancies_page(json_data)
-                            
+
+                        if html:
+                            vacancies = self.parse_vacancies_page(html)
+
                             for vacancy in vacancies:
                                 vacancy['search_query'] = search_term
                                 vacancy['area_id'] = area_id
-                            
+
                             all_vacancies.extend(vacancies)
-                            
-                            total_pages = json_data.get('pages', 1)
-                            found = json_data.get('found', 0)
-                            
-                            if page >= total_pages - 1:
+
+                            if not vacancies:
+                                if use_progress_bar:
+                                    pbar.set_postfix({
+                                        'Вакансии': len(all_vacancies),
+                                        'Запрос': search_term[:20],
+                                        'Статус': 'Нет вакансий - остановка'
+                                    })
                                 break
-                                
-                            if stop_on_rate_limit and found == 0 and page == 0:
-                                break
-                        
                         else:
                             error_count += 1
-                        
+
                         if delay > 0:
                             time.sleep(delay)
         
@@ -452,13 +507,13 @@ class HHVacancyParser:
         if df.empty:
             return df
         
-        df['parsed_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        df['parsed_date'] = _now_msk()
         
         date_columns = ['published_at', 'created_at']
         for col in date_columns:
             if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors='coerce')
-                df[col] = df[col].dt.tz_localize(None)
+                df[col] = pd.to_datetime(df[col], errors='coerce', utc=True)
+                df[col] = df[col].dt.tz_convert(None)
         
         salary_columns = ['salary_from', 'salary_to']
         for col in salary_columns:
@@ -468,10 +523,10 @@ class HHVacancyParser:
         return df
     
     def save_to_files(self, df, base_filename='vacancies', vacancy_name='', include_timestamp=True):
-        if df.empty or df is None:
+        if df is None or df.empty:
             return None
         
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S') if include_timestamp else ''
+        timestamp = datetime.now(_MSK).strftime('%Y%m%d_%H%M%S') if include_timestamp else ''
         filename_suffix = f'_{timestamp}' if timestamp else ''
         
         try:
@@ -528,30 +583,82 @@ class HHVacancyParser:
     
     def get_vacancy_details(self, vacancy_id, url, max_retries=2):
         details = {}
-        
+
         for attempt in range(max_retries):
             try:
                 response = self.session.get(url, timeout=self.timeout)
-                
+
                 if response.status_code == 200:
-                    item = response.json()
-                    details['description'] = item['description']
+                    soup = BeautifulSoup(response.text, 'html.parser')
+
+                    # Описание
+                    desc_elem = soup.find('div', {'data-qa': 'vacancy-description'})
+                    if desc_elem:
+                        details['description'] = desc_elem.get_text(strip=True)
+
+                    # Опыт работы
+                    exp_elem = soup.find('span', {'data-qa': 'vacancy-experience'})
+                    if exp_elem:
+                        details['experience'] = exp_elem.get_text(strip=True)
+
+                    # Тип занятости: "Полная занятость"
+                    emp_elem = soup.find('div', {'data-qa': 'common-employment-text'})
+                    if emp_elem:
+                        details['employment'] = emp_elem.get_text(strip=True)
+
+                    # Формат работы → маппинг в исходные категории HH.ru
+                    sched_elem = soup.find('p', {'data-qa': 'work-formats-text'})
+                    if sched_elem:
+                        raw = re.sub(r'^Формат работы:\s*', '', sched_elem.get_text(strip=True))
+                        details['schedule'] = self._map_schedule(raw)
+
+                    # Зарплата: "165 000₽за месяцна руки"
+                    salary_elem = soup.find('div', {'data-qa': 'vacancy-salary'})
+                    if salary_elem:
+                        salary_text = salary_elem.get_text(strip=True)
+                        details.update(self._parse_salary(salary_text))
+                        # Gross: "до вычета налогов" → True, "на руки" → False
+                        if 'до вычета' in salary_text.lower() or 'gross' in salary_text.lower():
+                            details['salary_gross'] = True
+                        elif 'на руки' in salary_text.lower():
+                            details['salary_gross'] = False
+
+                    # Дата публикации: "опубликована1 мая 2026" (без пробела в HTML)
+                    page_text = soup.get_text()
+                    date_match = re.search(
+                        r'опубликована\s*(\d{1,2})\s*(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s*(\d{4})',
+                        page_text, re.IGNORECASE
+                    )
+                    if date_match:
+                        ru_months = {
+                            'января': '01', 'февраля': '02', 'марта': '03', 'апреля': '04',
+                            'мая': '05', 'июня': '06', 'июля': '07', 'августа': '08',
+                            'сентября': '09', 'октября': '10', 'ноября': '11', 'декабря': '12'
+                        }
+                        day, month_ru, year = date_match.group(1), date_match.group(2).lower(), date_match.group(3)
+                        month_num = ru_months.get(month_ru, '01')
+                        iso_date = f"{year}-{month_num}-{int(day):02d}"
+                        details['published_at'] = iso_date
+                        details['created_at'] = iso_date
+
                     return details
                 elif response.status_code == 404:
-                    return None
+                    return {}
                 else:
-                    pass
-                    
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
+                    continue
+
             except requests.exceptions.Timeout:
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
-                    continue
+                continue
             except Exception:
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
-                    continue
-        
-        return None
+                continue
+
+        return {}
     
     def get_available_areas(self):
         return list(self.HH_AREAS.keys())

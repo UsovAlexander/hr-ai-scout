@@ -5,11 +5,18 @@ import re
 import pandas as pd
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlencode, quote
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from tqdm import tqdm
+
+_MSK = ZoneInfo('Europe/Moscow')
+
+
+def _now_msk() -> str:
+    return datetime.now(_MSK).strftime('%Y-%m-%d %H:%M:%S')
 
 class HHResumeParser:
     """
@@ -289,10 +296,10 @@ class HHResumeParser:
         soup = BeautifulSoup(html, 'html.parser')
         resumes = []
         
-        resume_elements = soup.find_all('div', {'data-qa': 'resume-serp__resume'})
-        
+        resume_elements = soup.find_all(['div', 'article'], {'data-qa': 'resume-serp__resume'})
+
         if not resume_elements:
-            resume_elements = soup.find_all('div', {'data-resume-id': True})
+            resume_elements = soup.find_all(['div', 'article'], {'data-resume-id': True})
         
         for element in resume_elements:
             resume_data = self._parse_resume_card(element)
@@ -339,32 +346,50 @@ class HHResumeParser:
                     
                     experience_block = soup.find('div', {'data-qa': 'resume-block-experience'})
                     if experience_block:
-                        company_elems = experience_block.find_all('div', class_=re.compile(r'resume-block-item-gap'))
+                        # Magritte: resume-block__experience-item; fallback Bloko: resume-block-item-gap
+                        company_elems = (
+                            experience_block.find_all('div', class_=re.compile(r'resume-block__experience-item')) or
+                            experience_block.find_all('div', class_=re.compile(r'resume-block-item-gap'))
+                        )
                         if company_elems:
-                            company_elem = company_elems[0].find('div', class_=re.compile(r'bloko-text bloko-text_strong'))
+                            # Название компании: data-qa → Magritte class → Bloko class
+                            company_elem = (
+                                company_elems[0].find(['div', 'a'], {'data-qa': 'resume-block-experience-company-name'}) or
+                                company_elems[0].find('div', class_=re.compile(r'resume-block__experience-company')) or
+                                company_elems[0].find('div', class_=re.compile(r'bloko-text bloko-text_strong'))
+                            )
                             if company_elem:
                                 details['last_company'] = company_elem.get_text(strip=True)
-                            
+
                             position_elem = company_elems[0].find('div', {'data-qa': 'resume-block-experience-position'})
                             if position_elem:
                                 details['last_position'] = position_elem.get_text(strip=True)
-                            
+
                             desc_elem = company_elems[0].find('div', {'data-qa': 'resume-block-experience-description'})
                             if desc_elem:
                                 details['last_experience_description'] = desc_elem.get_text(strip=True)
-                            
-                            period_elem = company_elems[0].find('div', class_=re.compile(r'bloko-text bloko-text_tertiary'))
+
+                            # Период: data-qa → Magritte class → Bloko class
+                            period_elem = (
+                                company_elems[0].find('div', {'data-qa': 'resume-block-experience-timeinterval'}) or
+                                company_elems[0].find('div', class_=re.compile(r'resume-block__experience-timeinterval')) or
+                                company_elems[0].find('div', class_=re.compile(r'bloko-text bloko-text_tertiary'))
+                            )
                             if period_elem:
                                 details['last_company_experience_period'] = period_elem.get_text()
 
                     salary_block = soup.find('span', {'data-qa': 'resume-block-salary'})
                     if salary_block:
                         details['salary'] = salary_block.get_text()
-                    
+
                     skills_block = soup.find('div', {'data-qa': 'skills-table'})
                     if skills_block:
-                        skills = skills_block.find_all('div', class_=re.compile(r'bloko-tag bloko-tag_inline'))
-                        details['skills'] = [skill.get_text() for skill in skills]
+                        # Magritte: data-qa='bloko-tag'; Bloko: class bloko-tag_inline
+                        skills = (
+                            skills_block.find_all(['div', 'span'], {'data-qa': 'bloko-tag'}) or
+                            skills_block.find_all('div', class_=re.compile(r'bloko-tag bloko-tag_inline'))
+                        )
+                        details['skills'] = [skill.get_text(strip=True) for skill in skills]
                     
                     education_block = soup.find('div', {'data-qa': 'resume-block-education'})
                     if education_block:
@@ -410,29 +435,30 @@ class HHResumeParser:
     def _parse_resume_card(self, element):
         try:
             resume = {}
-            
-            resume_id = element.get('data-resume-id')
-            if resume_id:
-                resume['id'] = resume_id
-            
+
             link_elem = element.find('a', {'data-qa': 'serp-item__title'})
             if link_elem and link_elem.has_attr('href'):
                 href = link_elem.get('href')
                 resume['url'] = urljoin(self.base_url, href)
-                
+
+                # Числовой id закодирован в bytes 4-8 hex-хеша (data-resume-hash или URL)
+                # Пример: hash='2dd301d3000096ccab...' → int('000096ccab', 16) = 9882795
+                hash_str = element.get('data-resume-hash', '')
+                if not hash_str:
+                    m = re.search(r'/resume/([a-f0-9]{30,})', href)
+                    hash_str = m.group(1) if m else ''
+                if len(hash_str) >= 18:
+                    resume['id'] = str(int(hash_str[8:18], 16))
+                else:
+                    resume['id'] = hash_str
+
                 details = self.parse_resume_details(resume['url'])
                 resume.update(details)
-                
             else:
-                if resume_id:
-                    resume['url'] = f"{self.base_url}/resume/{resume_id}"
-                else:
-                    resume['url'] = ''
-            
-            title_elem = element.find('a', {'data-qa': 'serp-item__title'})
-            if not title_elem:
-                title_elem = element.find('span', {'data-qa': 'serp-item__title'})
-            
+                resume['id'] = ''
+                resume['url'] = ''
+
+            title_elem = link_elem or element.find('span', {'data-qa': 'serp-item__title'})
             if title_elem and hasattr(title_elem, 'get_text'):
                 resume['title'] = title_elem.get_text(strip=True)
             
@@ -473,14 +499,14 @@ class HHResumeParser:
                 'id': resume.get('id', ''),
                 'title': resume.get('title', ''),
                 'url': resume.get('url', ''),
-                'specialization': resume.get('specialization', ''),
+                'specialization': resume.get('specialization', []),
                 'last_company': resume.get('last_company', ''),
                 'last_position': resume.get('last_position', ''),
                 'last_experience_description': resume.get('last_experience_description', ''),
                 'last_company_experience_period': resume.get('last_company_experience_period', ''),
-                'skills': resume.get('skills', ''),
-                'education': resume.get('education', ''),
-                'courses': resume.get('courses', ''),
+                'skills': resume.get('skills', []),
+                'education': resume.get('education', []),
+                'courses': resume.get('courses', []),
                 'salary': resume.get('salary', ''),
                 'age': resume.get('age'),
                 'total_experience': resume.get('total_experience', ''),
@@ -489,7 +515,7 @@ class HHResumeParser:
                 'gender': resume.get('gender', ''),
                 'applicant_status': resume.get('applicant_status', ''),
                 'search_query': resume.get('search_query', ''),
-                'parsed_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                'parsed_date': _now_msk()
             }
             simplified_resumes.append(simple_resume)
         
@@ -497,10 +523,10 @@ class HHResumeParser:
         return df
 
     def save_to_files(self, df, base_filename='resumes', resume_name='', include_timestamp=True):
-        if df.empty or df is None:
+        if df is None or df.empty:
             return None
         
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S') if include_timestamp else ''
+        timestamp = datetime.now(_MSK).strftime('%Y%m%d_%H%M%S') if include_timestamp else ''
         filename_suffix = f'_{timestamp}' if timestamp else ''
         
         try:

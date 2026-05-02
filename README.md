@@ -76,9 +76,10 @@
 | **Глубокое обучение** | PyTorch / TensorFlow, Transformers, BERT |
 | **Обработка текста** | NLTK, SpaCy|
 | **Фронтенд** | Streamlit |
-| **Базы данных** | PostgreSQL, Clickhouse |
-| **Парсинг данных** | BeautifulSoup, Scrapy, Selenium |
-| **Деплой & DevOps** | Docker, Docker Compose|
+| **Базы данных** | PostgreSQL, ClickHouse |
+| **Парсинг данных** | BeautifulSoup, Requests |
+| **Оркестрация** | Apache Airflow 2.9 |
+| **Деплой & DevOps** | Docker, Docker Compose |
 
 ---
 
@@ -131,7 +132,40 @@
     ./mlflow_run.sh status
     ```
 
-5. **Для запуска сервиса с FASTAPI используйте следующие команды**
+5. **Сбор данных через Apache Airflow**
+
+Парсинг резюме и вакансий с HH.ru автоматизирован через Apache Airflow. Данные сохраняются в ClickHouse.
+
+**Запуск Airflow:**
+```bash
+cd airflow
+docker compose up -d
+```
+
+Веб-интерфейс доступен по адресу **http://localhost:8080** (логин: `admin`, пароль: `admin`).
+
+**Расписание DAG-ов:**
+
+| DAG | Расписание | Описание |
+| :--- | :--- | :--- |
+| `resume_daily` | пн–сб в 01:00 МСК | 5 стр. × 20 резюме по каждой IT-профессии |
+| `resume_weekly` | сб в 23:00 МСК | 250 стр. × 20 резюме — полное обновление базы |
+| `vacancy_daily` | по триггеру | 5 стр. × 20 вакансий, запускается автоматически после завершения resume DAG |
+
+Резюме и вакансии парсятся **последовательно**: сначала завершается сбор резюме, затем автоматически стартует сбор вакансий — это снижает нагрузку на HH.ru и уменьшает риск блокировки IP.
+
+Поле `parsed_date` во всех таблицах сохраняется в часовом поясе **Europe/Moscow**.
+
+**Активация DAG-ов:**
+```bash
+docker compose exec airflow-scheduler airflow dags unpause resume_daily
+docker compose exec airflow-scheduler airflow dags unpause resume_weekly
+docker compose exec airflow-scheduler airflow dags unpause vacancy_daily
+```
+
+---
+
+6. **Для запуска сервиса с FASTAPI используйте следующие команды**
 
 Перед запуском сервиса необходимо подготовить данные с резюме.
 
