@@ -129,8 +129,11 @@ class HabrResumeParser:
 
     # ── Profile page ──────────────────────────────────────────────────
 
-    def parse_resume_details(self, url: str, max_retries: int = 2) -> dict:
-        """Разбирает профиль соискателя и возвращает словарь полей."""
+    def parse_resume_details(self, url: str, max_retries: int = 2) -> dict | None:
+        """
+        Разбирает профиль соискателя.
+        Возвращает dict — успех, {} — 404/ошибка, None — 429 (rate limit).
+        """
         if self._check_404_limit():
             return {}
         for attempt in range(max_retries):
@@ -143,10 +146,8 @@ class HabrResumeParser:
                     self._handle_404()
                     return {}
                 elif r.status_code == 429:
-                    wait = 30 * (attempt + 1)
-                    print(f'[429] Rate limit — ожидаем {wait}с...')
-                    time.sleep(wait)
-                    continue
+                    # Сигнализируем вызывающему коду о rate limit, не ждём здесь
+                    return None
                 else:
                     self._handle_ok()
                     if attempt < max_retries - 1:
@@ -394,18 +395,23 @@ class HabrResumeParser:
 
     # ── Main loader ───────────────────────────────────────────────────
 
+    # Порог 429 подряд — после него пропускаем поисковый запрос и ждём
+    _MAX_CONSECUTIVE_429 = 3
+    _429_COOLDOWN = 120  # секунд ожидания после достижения порога
+
     def load_resumes(
         self,
         search_terms: list[str],
         pages: int = 5,
         items_on_page: int = 20,
-        delay: int = 2,
+        delay: int = 5,
         use_progress_bar: bool = True,
     ) -> pd.DataFrame | None:
 
         total = len(search_terms) * pages
         pbar = tqdm(total=total, desc='Habr Резюме') if use_progress_bar else None
         all_resumes = []
+        consecutive_429 = 0
 
         try:
             for search_term in search_terms:
@@ -428,12 +434,31 @@ class HabrResumeParser:
                             pbar.set_postfix({'Статус': 'Нет профилей — стоп'})
                         break
 
+                    term_rate_limited = False
                     for url in profile_urls:
-                        resume = self.parse_resume_details(url)
-                        if resume:
-                            resume['search_query'] = search_term
-                            all_resumes.append(resume)
-                        time.sleep(3)  # Habr ограничивает частые запросы к профилям
+                        result = self.parse_resume_details(url)
+
+                        if result is None:
+                            # 429 — rate limit
+                            consecutive_429 += 1
+                            print(f'[429] Пропускаем профиль ({consecutive_429} подряд): {url}')
+                            if consecutive_429 >= self._MAX_CONSECUTIVE_429:
+                                print(f'[429] {consecutive_429} ошибок подряд — ожидаем {self._429_COOLDOWN}с и переходим к следующей профессии')
+                                time.sleep(self._429_COOLDOWN)
+                                consecutive_429 = 0
+                                term_rate_limited = True
+                                break
+                        elif result:
+                            consecutive_429 = 0
+                            result['search_query'] = search_term
+                            all_resumes.append(result)
+                        else:
+                            consecutive_429 = 0  # 404 или пустой профиль — не 429
+
+                        time.sleep(delay)
+
+                    if term_rate_limited:
+                        break  # переходим к следующей профессии
 
                     if delay > 0:
                         time.sleep(delay)
