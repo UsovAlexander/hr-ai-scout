@@ -166,26 +166,27 @@ docker exec -it clickhouse clickhouse-client --password your_password
 
 ```sql
 CREATE TABLE IF NOT EXISTS hh_resumes (
-    id                            String,
-    title                         Nullable(String),
-    url                           Nullable(String),
-    specialization                Array(Nullable(String)),
-    last_company                  Nullable(String),
-    last_position                 Nullable(String),
-    last_experience_description   Nullable(String),
+    id                             String,
+    title                          Nullable(String),
+    url                            Nullable(String),
+    specialization                 Array(Nullable(String)),
+    last_company                   Nullable(String),
+    last_position                  Nullable(String),
+    last_experience_description    Nullable(String),
     last_company_experience_period Nullable(String),
-    skills                        Array(String),
-    education                     Array(String),
-    courses                       Array(String),
-    salary                        Nullable(String),
-    age                           Nullable(Int64),
-    total_experience              Nullable(String),
-    experience_months             Nullable(Int64),
-    location                      Nullable(String),
-    gender                        Nullable(String),
-    applicant_status              Nullable(String),
-    search_query                  Nullable(String),
-    parsed_date                   DateTime
+    skills                         Array(String),
+    education                      Array(String),
+    courses                        Array(String),
+    salary                         Nullable(String),
+    age                            Nullable(Int64),
+    total_experience               Nullable(String),
+    experience_months              Nullable(Int64),
+    location                       Nullable(String),
+    gender                         Nullable(String),
+    applicant_status               Nullable(String),
+    search_query                   Nullable(String),
+    source                         Nullable(String),
+    parsed_date                    DateTime
 ) ENGINE = MergeTree()
 ORDER BY (parsed_date, id);
 
@@ -210,6 +211,7 @@ CREATE TABLE IF NOT EXISTS hh_vacancies (
     salary_gross     Nullable(Bool),
     search_query     Nullable(String),
     area_id          Nullable(Int64),
+    source           Nullable(String),
     parsed_date      DateTime
 ) ENGINE = MergeTree()
 ORDER BY (parsed_date, id);
