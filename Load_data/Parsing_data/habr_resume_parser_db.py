@@ -197,7 +197,7 @@ class HabrResumeParser:
             'last_company':                  '',
             'last_position':                 '',
             'last_experience_description':   exp_description,
-            'last_company_experience_period': total_exp,
+            'last_company_experience_period': '',  # недоступно из листинга
             'skills':                        skills,
             'education':                     [],
             'courses':                       [],
