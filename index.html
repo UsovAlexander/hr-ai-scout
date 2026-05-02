@@ -453,8 +453,8 @@
 <section class="hero">
   <div class="orb-purple"></div>
   <div class="hero-content">
-    <span class="badge hero-label">🎓 Магистерский проект · HH.ru · ML</span>
-    <h1>Умный скоринг<br><span class="gradient-text">кандидатов с HH.ru</span></h1>
+    <span class="badge hero-label">🎓 Магистерский проект · Рынок труда · ML</span>
+    <h1>Умный скоринг<br><span class="gradient-text">кандидатов на рынке труда</span></h1>
     <p>
       HR-AI Scout автоматически собирает резюме и вакансии, строит 15 признаков из текста и метаданных,
       и ранжирует кандидатов по вероятности соответствия позиции.
@@ -490,7 +490,7 @@
     <div class="fade-in">
       <div class="section-label">Как работает система</div>
       <h2 class="section-title">Сквозной пайплайн данных</h2>
-      <p class="section-sub">От сырого HTML на HH.ru до скорингового ответа API — весь процесс автоматизирован.</p>
+      <p class="section-sub">От сырых данных с агрегаторов рынка труда до скорингового ответа API — весь процесс автоматизирован.</p>
     </div>
     <div class="pipeline-grid fade-in">
       <div class="pipeline-step">
@@ -498,7 +498,7 @@
         <div class="step-num">01</div>
         <span class="step-icon">🕷️</span>
         <div class="step-title">Сбор данных</div>
-        <div class="step-desc">HTML-скрапинг hh.ru/search/resume и hh.ru/search/vacancy. Airflow запускает DAG-и по расписанию.</div>
+        <div class="step-desc">Сбор резюме и вакансий с агрегаторов рынка труда. Airflow запускает DAG-и по расписанию.</div>
       </div>
       <div class="pipeline-step">
         <div class="pipeline-arrow">→</div>
@@ -542,7 +542,7 @@
       <div class="feature-card fade-in">
         <div class="feature-icon" style="background:rgba(79,142,247,.12)">📡</div>
         <h3>Автоматический парсинг</h3>
-        <p>Ежедневно собирает свежие резюме и вакансии с HH.ru без участия человека. Умная остановка по пустой странице предотвращает лишние запросы.</p>
+        <p>Ежедневно собирает свежие резюме и вакансии с агрегаторов рынка труда без участия человека. Умная остановка по пустой странице предотвращает лишние запросы.</p>
       </div>
       <div class="feature-card fade-in">
         <div class="feature-icon" style="background:rgba(139,92,246,.12)">🔢</div>
@@ -587,7 +587,7 @@
         <div class="arch-items">
           <span class="arch-chip chip-blue">BeautifulSoup</span>
           <span class="arch-chip chip-blue">Requests</span>
-          <span class="arch-chip chip-blue">HH.ru HTML</span>
+          <span class="arch-chip chip-blue">Агрегаторы вакансий</span>
           <span class="arch-chip chip-blue">Retry / Backoff</span>
         </div>
       </div>
@@ -686,7 +686,7 @@
       <div class="dag-card vacancy">
         <div class="dag-id">vacancy_daily</div>
         <h3>Сбор вакансий</h3>
-        <p>Запускается только по триггеру от resume DAG-ов — никогда сам по себе. Гарантирует последовательность запросов к HH.ru.</p>
+        <p>Запускается только по триггеру от resume DAG-ов — никогда сам по себе. Гарантирует последовательность запросов к источникам данных.</p>
         <div class="dag-schedule"><span class="icon">🔗</span> по триггеру · 5 стр. × 20 вакансий</div>
         <div class="dag-trigger" style="color:var(--green)">✓ schedule = None</div>
       </div>
