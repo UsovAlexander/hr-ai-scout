@@ -42,29 +42,11 @@ def _get_clickhouse_client():
     )
 
 
-def _get_unloaded_positions(clickhouse):
-    try:
-        loaded = clickhouse.query_dataframe(
-            'SELECT DISTINCT search_query FROM hh_resumes'
-        )
-        loaded_set = set(loaded['search_query'].tolist())
-    except Exception:
-        loaded_set = set()
-    return sorted(set(IT_PROFESSIONS) - loaded_set)
-
-
 def parse_resumes(pages: int, items_on_page: int = 20, **context):
     clickhouse = _get_clickhouse_client()
     parser = HHResumeParser(timeout=60, max_retries=5)
 
-    if pages == 250:
-        professions = _get_unloaded_positions(clickhouse)
-        print(f"[weekly] Незагруженных профессий: {len(professions)}")
-    else:
-        professions = IT_PROFESSIONS
-        print(f"[daily] Профессий для обновления: {len(professions)}")
-
-    for prof in professions:
+    for prof in IT_PROFESSIONS:
         print(f">>> {prof} ({pages} стр.)")
         df = parser.load_resumes(
             search_terms=[prof],
