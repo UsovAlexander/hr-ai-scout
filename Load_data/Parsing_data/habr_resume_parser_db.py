@@ -186,6 +186,9 @@ class HabrResumeParser:
         total_exp = self._extract_exp_from_lines(lines)
         experience_months = self._parse_experience_to_months(total_exp)
 
+        # Сниппет описания опыта — текст карточки после «Опыт работы»
+        exp_description = self._extract_exp_description_from_lines(lines)
+
         return {
             'id':                            username,
             'title':                         f'{title} — {level}'.strip(' —') if level else title,
@@ -193,8 +196,8 @@ class HabrResumeParser:
             'specialization':                [title] if title else [],
             'last_company':                  '',
             'last_position':                 '',
-            'last_experience_description':   '',
-            'last_company_experience_period': '',
+            'last_experience_description':   exp_description,
+            'last_company_experience_period': total_exp,
             'skills':                        skills,
             'education':                     [],
             'courses':                       [],
@@ -239,13 +242,39 @@ class HabrResumeParser:
         """Опыт работы — строка после «Опыт работы»."""
         try:
             idx = next(i for i, l in enumerate(lines) if l == 'Опыт работы')
-            # Ищем строку с «лет» или «месяц» среди следующих строк
             for l in lines[idx + 1: idx + 5]:
                 if re.search(r'лет|год|месяц', l, re.I):
                     return l
         except StopIteration:
             pass
         return ''
+
+    def _extract_exp_description_from_lines(self, lines: list[str]) -> str:
+        """
+        Сниппет описания опыта — текст карточки после блока «Опыт работы».
+        Listing показывает краткое описание последней позиции без названия компании.
+        """
+        _STOP = {'Образование', 'Профессиональные навыки', 'Добавить в избранное',
+                 'Открыть контакты', 'Написать', 'Хабр Карьера'}
+        try:
+            idx = next(i for i, l in enumerate(lines) if l == 'Опыт работы')
+        except StopIteration:
+            return ''
+
+        # Пропускаем строки с количеством компаний, стажем и разделителями
+        desc_parts = []
+        skip_re = re.compile(r'^\d+\s+компани|\d+\s*(лет|год|года|месяц)|^•$', re.I)
+        for l in lines[idx + 1: idx + 30]:
+            if l in _STOP:
+                break
+            if skip_re.search(l):   # пропускаем строки со стажем на любом этапе
+                continue
+            if len(l) > 5:
+                desc_parts.append(l)
+            if len(' '.join(desc_parts)) > 500:
+                break
+
+        return ' '.join(desc_parts).strip()[:1000]
 
     # ── Profile page ──────────────────────────────────────────────────
 
