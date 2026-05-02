@@ -508,7 +508,7 @@ class SJVacancyParser:
             return False
         try:
             ids = df['id'].tolist()
-            clickhouse.execute(f"ALTER TABLE hh_vacancies DELETE WHERE id IN {ids}")
+            clickhouse.execute(f"ALTER TABLE hh_vacancies DELETE WHERE id IN {ids} AND source = 'superjob.ru'")
             clickhouse.insert_dataframe(
                 f"INSERT INTO hh_vacancies ({', '.join(df.columns)}) VALUES", df
             )

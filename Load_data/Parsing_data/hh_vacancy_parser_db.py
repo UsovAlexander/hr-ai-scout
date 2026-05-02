@@ -565,8 +565,8 @@ class HHVacancyParser:
             for i in range(0, len(df), 10000):
                 ids = df.loc[i: i + 10000, 'id'].tolist()
                 clickhouse.execute(f"""
-                alter table hh_vacancies
-                delete where id in {ids}
+                ALTER TABLE hh_vacancies
+                DELETE WHERE id IN {ids} AND source = 'hh.ru'
                 """)
             
             clickhouse.insert_dataframe(f"""
