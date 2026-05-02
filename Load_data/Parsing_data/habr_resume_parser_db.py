@@ -114,18 +114,138 @@ class HabrResumeParser:
             self._handle_ok()
         return None
 
-    def parse_search_results(self, html: str) -> list[str]:
-        """Извлекает список URL профилей из страницы поиска."""
+    def parse_search_results(self, html: str) -> list[dict]:
+        """
+        Извлекает резюме прямо из карточек на странице поиска.
+        Не посещает отдельные профили — исключает 429 Rate Limit.
+        """
         if not html:
             return []
         soup = BeautifulSoup(html, 'html.parser')
-        seen, urls = set(), []
-        for a in soup.find_all('a', href=True):
-            href = a.get('href', '')
-            if _is_profile_link(href) and href not in seen:
-                seen.add(href)
-                urls.append(urljoin(self.base_url, href))
-        return urls
+        resumes, seen = [], set()
+
+        for article in soup.find_all('article'):
+            # Находим ссылку на профиль внутри карточки
+            profile_link = next(
+                (a for a in article.find_all('a', href=True)
+                 if _is_profile_link(a.get('href', ''))),
+                None,
+            )
+            if profile_link is None:
+                continue
+            href = profile_link.get('href')
+            if href in seen:
+                continue
+            seen.add(href)
+
+            username = href.lstrip('/')
+            url = urljoin(self.base_url, href)
+            name = profile_link.get_text(strip=True)
+
+            resume = self._parse_card(username, url, name, article)
+            resumes.append(resume)
+
+        return resumes
+
+    def _parse_card(self, username: str, url: str, name: str, card) -> dict:
+        """Разбирает карточку резюме из страницы поиска."""
+        # Полный текст карточки строками
+        lines = [l.strip() for l in card.get_text(separator='\n').split('\n') if l.strip()]
+
+        # Дата последнего обновления
+        t_elem = card.find('time')
+        last_update = t_elem.get_text(strip=True) if t_elem else ''
+
+        # Навыки — кнопки внутри карточки (исключаем UI-кнопки и склеенный текст)
+        _UI_BUTTONS = {'Развернуть', 'Свернуть', 'Открыть контакты', 'Написать', 'Откликнуться'}
+        skills = [
+            b.get_text(strip=True) for b in card.find_all('button')
+            if b.get_text(strip=True)
+            and b.get_text(strip=True) not in _UI_BUTTONS
+            and '•' not in b.get_text()
+            and 'компани' not in b.get_text().lower()
+            and len(b.get_text(strip=True)) < 60
+        ]
+
+        # Уровень
+        level = self._extract_level('\n'.join(lines))
+
+        # Заголовок — текст между именем и уровнем/статусом
+        title = self._extract_title_from_lines(lines, name, level)
+
+        # Зарплата
+        salary = self._extract_salary('\n'.join(lines))
+
+        # Статус поиска
+        applicant_status = self._extract_status('\n'.join(lines))
+
+        # Возраст
+        age = self._extract_age_from_lines(lines)
+
+        # Опыт
+        total_exp = self._extract_exp_from_lines(lines)
+        experience_months = self._parse_experience_to_months(total_exp)
+
+        return {
+            'id':                            username,
+            'title':                         f'{title} — {level}'.strip(' —') if level else title,
+            'url':                           url,
+            'specialization':                [title] if title else [],
+            'last_company':                  '',
+            'last_position':                 '',
+            'last_experience_description':   '',
+            'last_company_experience_period': '',
+            'skills':                        skills,
+            'education':                     [],
+            'courses':                       [],
+            'salary':                        salary,
+            'age':                           age,
+            'total_experience':              total_exp,
+            'experience_months':             experience_months,
+            'location':                      '',
+            'gender':                        '',
+            'applicant_status':              applicant_status,
+            'source':                        'career.habr.com',
+        }
+
+    def _extract_title_from_lines(self, lines: list[str], name: str, level: str) -> str:
+        """Должность — строки между именем и уровнем/статусом в карточке."""
+        _level_re = re.compile(r'^(Lead|Senior|Middle|Junior|Ведущий|Старший|Средний|Младший)$')
+        _stop = {'Ищу работу', 'Рассматриваю предложения', 'Не ищу работу',
+                 'Профессиональные навыки', 'Возраст', 'Опыт работы',
+                 'Написать на Хабре', 'Написать', 'Войти', '•', ''}
+        try:
+            start = next(i for i, l in enumerate(lines) if l == name)
+        except StopIteration:
+            return ''
+        title_parts = []
+        for l in lines[start + 2: start + 8]:   # +2 пропускаем дату
+            if l in _stop or _level_re.match(l) or '₽' in l:
+                break
+            if l != '•' and len(l) > 1:
+                title_parts.append(l)
+        return ' '.join(title_parts).strip()
+
+    def _extract_age_from_lines(self, lines: list[str]) -> int | None:
+        """Возраст — строка после «Возраст»."""
+        try:
+            idx = next(i for i, l in enumerate(lines) if l == 'Возраст')
+            m = re.search(r'(\d+)', lines[idx + 1])
+            return int(m.group(1)) if m else None
+        except (StopIteration, IndexError):
+            return None
+
+    def _extract_exp_from_lines(self, lines: list[str]) -> str:
+        """Опыт работы — строка после «Опыт работы»."""
+        try:
+            idx = next(i for i, l in enumerate(lines) if l == 'Опыт работы')
+            # Ищем строку с «лет» или «месяц» среди следующих строк
+            for l in lines[idx + 1: idx + 5]:
+                if re.search(r'лет|год|месяц', l, re.I):
+                    return l
+        except StopIteration:
+            pass
+        return ''
 
     # ── Profile page ──────────────────────────────────────────────────
 
@@ -428,37 +548,16 @@ class HabrResumeParser:
                     if not html:
                         break
 
-                    profile_urls = self.parse_search_results(html)
-                    if not profile_urls:
+                    # Данные извлекаются прямо из карточек — профили не посещаем
+                    resumes = self.parse_search_results(html)
+                    if not resumes:
                         if pbar:
-                            pbar.set_postfix({'Статус': 'Нет профилей — стоп'})
+                            pbar.set_postfix({'Статус': 'Нет карточек — стоп'})
                         break
 
-                    term_rate_limited = False
-                    for url in profile_urls:
-                        result = self.parse_resume_details(url)
-
-                        if result is None:
-                            # 429 — rate limit
-                            consecutive_429 += 1
-                            print(f'[429] Пропускаем профиль ({consecutive_429} подряд): {url}')
-                            if consecutive_429 >= self._MAX_CONSECUTIVE_429:
-                                print(f'[429] {consecutive_429} ошибок подряд — ожидаем {self._429_COOLDOWN}с и переходим к следующей профессии')
-                                time.sleep(self._429_COOLDOWN)
-                                consecutive_429 = 0
-                                term_rate_limited = True
-                                break
-                        elif result:
-                            consecutive_429 = 0
-                            result['search_query'] = search_term
-                            all_resumes.append(result)
-                        else:
-                            consecutive_429 = 0  # 404 или пустой профиль — не 429
-
-                        time.sleep(delay)
-
-                    if term_rate_limited:
-                        break  # переходим к следующей профессии
+                    for resume in resumes:
+                        resume['search_query'] = search_term
+                    all_resumes.extend(resumes)
 
                     if delay > 0:
                         time.sleep(delay)
