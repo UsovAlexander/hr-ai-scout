@@ -507,6 +507,7 @@ class HHVacancyParser:
         if df.empty:
             return df
         
+        df['source'] = 'hh.ru'
         df['parsed_date'] = _now_msk()
         
         date_columns = ['published_at', 'created_at']
