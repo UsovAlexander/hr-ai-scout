@@ -76,9 +76,10 @@
 | **Глубокое обучение** | PyTorch / TensorFlow, Transformers, BERT |
 | **Обработка текста** | NLTK, SpaCy|
 | **Фронтенд** | Streamlit |
-| **Базы данных** | PostgreSQL, Clickhouse |
-| **Парсинг данных** | BeautifulSoup, Scrapy, Selenium |
-| **Деплой & DevOps** | Docker, Docker Compose|
+| **Базы данных** | PostgreSQL, ClickHouse |
+| **Парсинг данных** | BeautifulSoup, Requests |
+| **Оркестрация** | Apache Airflow 2.9 |
+| **Деплой & DevOps** | Docker, Docker Compose |
 
 ---
 
@@ -100,7 +101,15 @@
     ```
 
 3.  **Настройте переменные окружения:**
-    Создайте файл `.env` 
+
+    Создайте файл `.env` в корне проекта:
+    ```env
+    CLICKHOUSE_USER=default
+    CLICKHOUSE_PASSWORD=your_password
+    CLICKHOUSE_HOST=localhost
+    CLICKHOUSE_PORT=9000
+    CLICKHOUSE_DATABASE=default
+    ```
 
 4.  **Для работы с MLFLOW используйте следующие команды**
 
@@ -131,7 +140,129 @@
     ./mlflow_run.sh status
     ```
 
-5. **Для запуска сервиса с FASTAPI используйте следующие команды**
+5. **Развёртывание ClickHouse**
+
+ClickHouse используется как основное хранилище резюме и вакансий. Проще всего запустить его через Docker:
+
+```bash
+docker run -d \
+  --name clickhouse \
+  --restart always \
+  -p 9000:9000 \
+  -p 8123:8123 \
+  -e CLICKHOUSE_PASSWORD=your_password \
+  clickhouse/clickhouse-server:latest
+```
+
+> Веб-интерфейс (HTTP) — `http://localhost:8123`, нативный клиент (TCP) — порт `9000`.
+
+После запуска создайте таблицы. Подключитесь к ClickHouse:
+
+```bash
+docker exec -it clickhouse clickhouse-client --password your_password
+```
+
+И выполните DDL:
+
+```sql
+CREATE TABLE IF NOT EXISTS hh_resumes (
+    id                             String,
+    title                          Nullable(String),
+    url                            Nullable(String),
+    specialization                 Array(Nullable(String)),
+    last_company                   Nullable(String),
+    last_position                  Nullable(String),
+    last_experience_description    Nullable(String),
+    last_company_experience_period Nullable(String),
+    skills                         Array(String),
+    education                      Array(String),
+    courses                        Array(String),
+    salary                         Nullable(String),
+    age                            Nullable(Int64),
+    total_experience               Nullable(String),
+    experience_months              Nullable(Int64),
+    location                       Nullable(String),
+    gender                         Nullable(String),
+    applicant_status               Nullable(String),
+    search_query                   Nullable(String),
+    source                         Nullable(String),
+    parsed_date                    DateTime
+) ENGINE = MergeTree()
+ORDER BY (parsed_date, id);
+
+CREATE TABLE IF NOT EXISTS hh_vacancies (
+    id               String,
+    name             Nullable(String),
+    area             Nullable(String),
+    url              Nullable(String),
+    alternate_url    Nullable(String),
+    requirement      Nullable(String),
+    responsibility   Nullable(String),
+    description      Nullable(String),
+    employer         Nullable(String),
+    experience       Nullable(String),
+    employment       Nullable(String),
+    schedule         Nullable(String),
+    published_at     Nullable(DateTime),
+    created_at       Nullable(DateTime),
+    salary_from      Nullable(Float64),
+    salary_to        Nullable(Float64),
+    salary_currency  Nullable(String),
+    salary_gross     Nullable(Bool),
+    search_query     Nullable(String),
+    area_id          Nullable(Int64),
+    source           Nullable(String),
+    parsed_date      DateTime
+) ENGINE = MergeTree()
+ORDER BY (parsed_date, id);
+```
+
+---
+
+6. **Развёртывание Apache Airflow и настройка сбора данных**
+
+Парсинг резюме и вакансий с HH.ru автоматизирован через Apache Airflow. Все данные сохраняются в ClickHouse по расписанию.
+
+> **Требование:** ClickHouse должен быть запущен до старта Airflow (шаг 5).
+
+**Запуск:**
+```bash
+cd airflow
+docker compose up airflow-init   # первый запуск: инициализация БД и создание admin-пользователя
+docker compose up -d             # запуск планировщика и веб-сервера
+```
+
+Веб-интерфейс: **http://localhost:8080** — логин `admin`, пароль `admin`.
+
+В процессе `airflow-init` автоматически создаётся коннектор `clickhouse_default`, ссылающийся на хост-машину (`host.docker.internal`). Убедитесь, что параметры совпадают с вашим `.env`.
+
+**Расписание DAG-ов:**
+
+| DAG | Расписание | Описание |
+| :--- | :--- | :--- |
+| `resume_daily` | пн–сб в 01:00 МСК | 5 стр. × 20 резюме по каждой IT-профессии |
+| `resume_weekly` | сб в 23:00 МСК | 250 стр. × 20 резюме — полное обновление базы |
+| `vacancy_daily` | по триггеру | 5 стр. × 20 вакансий, запускается автоматически после `resume_daily` / `resume_weekly` |
+
+Резюме и вакансии парсятся **последовательно**: сначала завершается сбор резюме, затем автоматически стартует сбор вакансий — это снижает нагрузку на HH.ru и уменьшает риск блокировки IP.
+
+Поле `parsed_date` сохраняется в часовом поясе **Europe/Moscow**.
+
+**Активация DAG-ов** (по умолчанию DAG-и приостановлены):
+```bash
+docker compose exec airflow-scheduler airflow dags unpause resume_daily
+docker compose exec airflow-scheduler airflow dags unpause resume_weekly
+docker compose exec airflow-scheduler airflow dags unpause vacancy_daily
+```
+
+**Остановка Airflow:**
+```bash
+docker compose down
+```
+
+---
+
+7. **Для запуска сервиса с FASTAPI используйте следующие команды**
 
 Перед запуском сервиса необходимо подготовить данные с резюме.
 

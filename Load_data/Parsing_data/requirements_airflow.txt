@@ -1,0 +1,9 @@
+clickhouse-driver[numpy]==0.2.9
+beautifulsoup4==4.12.3
+requests==2.32.3
+python-dotenv==1.0.1
+tqdm==4.66.4
+numpy==1.26.4
+pandas==2.2.2
+lxml==5.2.2
+urllib3==2.2.1
