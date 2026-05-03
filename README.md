@@ -215,6 +215,23 @@ CREATE TABLE IF NOT EXISTS hh_vacancies (
     parsed_date      DateTime
 ) ENGINE = MergeTree()
 ORDER BY (parsed_date, id);
+
+-- Таблицы для хранения BERT-эмбеддингов (кешируются, не пересчитываются)
+CREATE TABLE IF NOT EXISTS vacancy_embeddings (
+    vacancy_id   String,
+    model_name   String,
+    embedding    Array(Float32),
+    created_at   DateTime DEFAULT now()
+) ENGINE = MergeTree()
+ORDER BY (model_name, vacancy_id);
+
+CREATE TABLE IF NOT EXISTS resume_embeddings (
+    resume_id    String,
+    model_name   String,
+    embedding    Array(Float32),
+    created_at   DateTime DEFAULT now()
+) ENGINE = MergeTree()
+ORDER BY (model_name, resume_id);
 ```
 
 ---
