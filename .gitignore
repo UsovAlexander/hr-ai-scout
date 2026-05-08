@@ -17,3 +17,4 @@ CLAUDE.md
 models_training/models/
 airflow/logs/scheduler/latest
 mlruns/4/
+mlruns/1/886fbc90fa7a45ada1c14aa7a5ed25e3/
