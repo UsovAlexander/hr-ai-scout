@@ -16,3 +16,4 @@ catboost_info
 CLAUDE.md
 models_training/models/
 airflow/logs/scheduler/latest
+mlruns/4/
