@@ -4,7 +4,7 @@ import json
 import re
 import pandas as pd
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlencode, quote
@@ -16,7 +16,8 @@ _MSK = ZoneInfo('Europe/Moscow')
 
 
 def _now_msk() -> str:
-    return datetime.now(_MSK).strftime('%Y-%m-%d %H:%M:%S')
+    # ClickHouse DateTime хранит UTC; пишем UTC, клиент покажет местное время
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
 class HHResumeParser:
     """
@@ -327,96 +328,115 @@ class HHResumeParser:
         except Exception:
             return None
 
+    def _extract_initial_state(self, soup):
+        """Парсит JSON из <template id="HH-Lux-InitialState"> и возвращает dict resume."""
+        template = soup.find('template', {'id': 'HH-Lux-InitialState'})
+        if not template:
+            return {}
+        try:
+            state = json.loads(template.decode_contents())
+            return state.get('resume', {})
+        except Exception:
+            return {}
+
     def parse_resume_details(self, url, max_retries=2):
         if self._check_404_limit():
             return {}
-            
+
         for attempt in range(max_retries):
             try:
                 response = self.session.get(url, timeout=self.timeout)
-                
+
                 if response.status_code == 200:
                     self._handle_successful_request()
                     soup = BeautifulSoup(response.text, 'html.parser')
                     details = {}
-                    
+
+                    # HH.ru теперь рендерит детали резюме на клиенте (React).
+                    # Данные о компаниях и должностях в experience.value всегда
+                    # пусты для анонимных запросов — поля last_company, last_position,
+                    # last_experience_description, last_company_experience_period
+                    # остаются пустыми без авторизации.
+                    resume_state = self._extract_initial_state(soup)
+
+                    # Специализация (HTML, сервер-рендер)
                     specialization_block = soup.find_all('li', class_=re.compile(r'resume-block__specialization'))
                     if specialization_block:
                         details['specialization'] = [spec.get_text(strip=True) for spec in specialization_block]
-                    
-                    experience_block = soup.find('div', {'data-qa': 'resume-block-experience'})
-                    if experience_block:
-                        # Magritte: resume-block__experience-item; fallback Bloko: resume-block-item-gap
-                        company_elems = (
-                            experience_block.find_all('div', class_=re.compile(r'resume-block__experience-item')) or
-                            experience_block.find_all('div', class_=re.compile(r'resume-block-item-gap'))
-                        )
-                        if company_elems:
-                            # Название компании: data-qa → Magritte class → Bloko class
-                            company_elem = (
-                                company_elems[0].find(['div', 'a'], {'data-qa': 'resume-block-experience-company-name'}) or
-                                company_elems[0].find('div', class_=re.compile(r'resume-block__experience-company')) or
-                                company_elems[0].find('div', class_=re.compile(r'bloko-text bloko-text_strong'))
-                            )
-                            if company_elem:
-                                details['last_company'] = company_elem.get_text(strip=True)
 
-                            position_elem = company_elems[0].find('div', {'data-qa': 'resume-block-experience-position'})
-                            if position_elem:
-                                details['last_position'] = position_elem.get_text(strip=True)
-
-                            desc_elem = company_elems[0].find('div', {'data-qa': 'resume-block-experience-description'})
-                            if desc_elem:
-                                details['last_experience_description'] = desc_elem.get_text(strip=True)
-
-                            # Период: data-qa → Magritte class → Bloko class
-                            period_elem = (
-                                company_elems[0].find('div', {'data-qa': 'resume-block-experience-timeinterval'}) or
-                                company_elems[0].find('div', class_=re.compile(r'resume-block__experience-timeinterval')) or
-                                company_elems[0].find('div', class_=re.compile(r'bloko-text bloko-text_tertiary'))
-                            )
-                            if period_elem:
-                                details['last_company_experience_period'] = period_elem.get_text()
-
+                    # Зарплата (HTML)
                     salary_block = soup.find('span', {'data-qa': 'resume-block-salary'})
                     if salary_block:
                         details['salary'] = salary_block.get_text()
 
-                    skills_block = soup.find('div', {'data-qa': 'skills-table'})
-                    if skills_block:
-                        # Magritte: data-qa='bloko-tag'; Bloko: class bloko-tag_inline
-                        skills = (
-                            skills_block.find_all(['div', 'span'], {'data-qa': 'bloko-tag'}) or
-                            skills_block.find_all('div', class_=re.compile(r'bloko-tag bloko-tag_inline'))
-                        )
-                        details['skills'] = [skill.get_text(strip=True) for skill in skills]
-                    
-                    education_block = soup.find('div', {'data-qa': 'resume-block-education'})
-                    if education_block:
-                        education_list = education_block.find_all('div', {'data-qa': 'resume-block-education-name'})
-                        if education_list:
-                            details['education'] = [edu.get_text() for edu in education_list]
-                    
-                    courses_block = soup.find('div', {'data-qa': 'resume-block-additional-education'})
-                    if courses_block:
-                        courses = courses_block.find_all('div', {'data-qa': 'resume-block-education-organization'})
-                        details['courses'] = [cor.get_text() for cor in courses]
+                    # Навыки: JSON-источник надёжнее сломанных HTML-селекторов
+                    if resume_state:
+                        key_skills = (resume_state.get('keySkills') or {}).get('value') or []
+                        if key_skills:
+                            details['skills'] = [s['string'] for s in key_skills if s.get('string')]
 
+                    if 'skills' not in details:
+                        # Fallback: span[data-qa='bloko-tag__text'] внутри skills-table
+                        skills_block = soup.find('div', {'data-qa': 'skills-table'})
+                        if skills_block:
+                            spans = skills_block.find_all('span', {'data-qa': 'bloko-tag__text'})
+                            if spans:
+                                details['skills'] = [s.get_text(strip=True) for s in spans]
+
+                    # Образование: из JSON (названия учреждений) → HTML (<p> с уровнем)
+                    if resume_state:
+                        primary_edu = (resume_state.get('primaryEducation') or {}).get('value') or []
+                        if primary_edu:
+                            details['education'] = [
+                                ' '.join(filter(None, [
+                                    e.get('organization'), e.get('faculty'),
+                                    f"({e['year']})" if e.get('year') else None
+                                ]))
+                                for e in primary_edu
+                            ]
+
+                    if 'education' not in details:
+                        education_block = soup.find('div', {'data-qa': 'resume-block-education'})
+                        if education_block:
+                            p_tags = education_block.find_all('p')
+                            if p_tags:
+                                details['education'] = [p.get_text(strip=True) for p in p_tags]
+
+                    # Курсы / доп. образование (JSON)
+                    if resume_state:
+                        add_edu = (resume_state.get('additionalEducation') or {}).get('value') or []
+                        attest_edu = (resume_state.get('attestationEducation') or {}).get('value') or []
+                        courses_raw = add_edu + attest_edu
+                        if courses_raw:
+                            details['courses'] = [
+                                ' '.join(filter(None, [
+                                    e.get('organization'), e.get('name'),
+                                    f"({e['year']})" if e.get('year') else None
+                                ]))
+                                for e in courses_raw
+                            ]
+
+                    # Пол (HTML)
                     gender = soup.find('span', {'data-qa': 'resume-personal-gender'})
                     if gender:
                         details['gender'] = gender.get_text()
 
+                    # Местоположение: HTML → JSON fallback
                     location = soup.find('span', {'data-qa': 'resume-personal-address'})
                     if location:
                         details['location'] = location.get_text()
-                    
+                    elif resume_state:
+                        area_val = (resume_state.get('area') or {}).get('value') or {}
+                        if area_val.get('title'):
+                            details['location'] = area_val['title']
+
                     return details
                 elif response.status_code == 404:
                     self._handle_404_error()
                     return {}
                 else:
                     self._handle_successful_request()
-                    
+
             except requests.exceptions.Timeout:
                 self._handle_successful_request()
                 if attempt < max_retries - 1:
@@ -429,7 +449,7 @@ class HHResumeParser:
                 if attempt < max_retries - 1:
                     time.sleep(2)
                     continue
-        
+
         return {}
     
     def _parse_resume_card(self, element):

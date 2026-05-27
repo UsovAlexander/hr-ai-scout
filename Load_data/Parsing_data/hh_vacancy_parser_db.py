@@ -4,7 +4,7 @@ import json
 import re
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
@@ -16,7 +16,7 @@ _MSK = ZoneInfo('Europe/Moscow')
 
 
 def _now_msk() -> str:
-    return datetime.now(_MSK).strftime('%Y-%m-%d %H:%M:%S')
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 from clickhouse_driver import Client as ClickhouseClient
 
 class HHVacancyParser:
