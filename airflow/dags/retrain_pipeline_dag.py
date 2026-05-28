@@ -75,9 +75,10 @@ def _parse_salary(text: str) -> float:
     if not text or text in ('NDT', ''):
         return 0.0
     parts = str(text).split()
-    num = next((int(p) for p in parts if re.fullmatch(r'\d+', p)), None)
-    if num is None:
+    num_str = ''.join(p for p in parts if re.fullmatch(r'\d+', p))
+    if not num_str:
         return 0.0
+    num = int(num_str)
     rates_rub = {'₽': 1.0, '$': 80.85, '€': 94.14, '₴': 1.94, '₸': 0.150,
                  '₼': 47.8, '₾': 33.5, 'Br': 28.7, "so'm": 0.0068}
     rate = next((rates_rub[s] for s in parts if s in rates_rub), 1.0)

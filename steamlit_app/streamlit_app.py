@@ -1,159 +1,480 @@
-import streamlit as st
-import requests
-import json
-import pandas as pd
-import sys
 import os
+import requests
+import pandas as pd
+import numpy as np
+import streamlit as st
+from dotenv import load_dotenv
 
-sys.path.insert(0, os.path.dirname(__file__))
-
-from batch_processor import process_csv_batch, get_summary_statistics
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 FASTAPI_URL = "http://localhost:8000"
 
-DEFAULT_JSON = {
-    "vacancy_area": "Москва",
-    "vacancy_experience": "От 1 года до 3 лет",
-    "vacancy_employment": "Полная занятость",
-    "vacancy_schedule": "Полный день",
-    "resume_location": "Москва",
-    "resume_gender": "Мужчина",
-    "resume_applicant_status": "Активно ищет работу",
-    "resume_salary": 80000.0,
-    "resume_age": 25.0,
-    "resume_experience_months": 24.0,
-    "resume_last_company_experience_months": 12.0,
-    "location_matching": 1.0,
-    "resume_skill_count_in_vacancy": 5.0,
-    "last_position_in_vacancy": 0.6,
-    "similarity_score_tfidf": 0.75
-}
+EXPERIENCE_OPTIONS = ["Нет опыта", "От 1 года до 3 лет", "От 3 до 6 лет", "Более 6 лет"]
+EMPLOYMENT_OPTIONS = ["Полная занятость", "Частичная занятость", "Проектная работа"]
+SCHEDULE_OPTIONS   = ["Полный день", "Удаленная работа", "Гибкий график", "Сменный график", "Вахтовый метод"]
 
-st.title("HR AI Scout")
+def _normalize_experience(v: str) -> str:
+    v = (v or '').lower().strip()
+    if 'нет' in v or 'не треб' in v:                 return EXPERIENCE_OPTIONS[0]
+    if '1' in v and ('3' in v or 'год' in v):         return EXPERIENCE_OPTIONS[1]
+    if '3' in v and ('6' in v or 'лет' in v):         return EXPERIENCE_OPTIONS[2]
+    if '6' in v or 'более' in v or 'свыше' in v:      return EXPERIENCE_OPTIONS[3]
+    return EXPERIENCE_OPTIONS[0]
 
+def _normalize_employment(v: str) -> str:
+    v = (v or '').lower()
+    if 'частич' in v:  return EMPLOYMENT_OPTIONS[1]
+    if 'проект' in v or 'разовое' in v: return EMPLOYMENT_OPTIONS[2]
+    return EMPLOYMENT_OPTIONS[0]
 
-mode = st.radio(
-    "Способ ввода:",
-    ["Одиночная оценка - JSON", "Пакетная оценка - CSV"],
-    horizontal=True
+def _normalize_schedule(v: str) -> str:
+    v = (v or '').lower()
+    if 'удал' in v:    return SCHEDULE_OPTIONS[1]
+    if 'гибк' in v:    return SCHEDULE_OPTIONS[2]
+    if 'сменн' in v:   return SCHEDULE_OPTIONS[3]
+    if 'вахт' in v:    return SCHEDULE_OPTIONS[4]
+    return SCHEDULE_OPTIONS[0]
+
+# ── Конфигурация страницы ─────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="HR AI Scout",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
-if mode == "Пакетная оценка - CSV":
-    
-    uploaded_file = st.file_uploader("Выберите CSV файл", type=["csv"])
-    
-    if uploaded_file is not None:
-        
-        if st.button("Обработать", type="primary", use_container_width=True):
-            try:
-                with st.spinner("Загрузка данных"):
-                    df = pd.read_csv(uploaded_file)
-                
-                with st.spinner("Обработка данных и расчет признаков"):
-                    results_df = process_csv_batch(df=df)
-                
-                st.success("Обработка завершена")
-                
-                stats = get_summary_statistics(results_df)
-                
-                st.markdown("### Статистика обработки")
-                
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    st.metric("Всего кандидатов", stats['total_candidates'])
-                
-                with col2:
-                    st.metric(
-                        "Рекомендовано", stats['recommended_count'])
-                
-                with col3:
-                    st.metric("Не рекомендовано", stats['not_recommended_count'])
-                
-                with col4:
-                    st.metric("Средняя вероятность", f"{stats['avg_probability']:.2%}")
-                
-                st.markdown("### Результаты оценки")
-                
-                display_df = results_df[[
-                    'resume_id', 'resume_title', 'resume_location', 
-                    'resume_age', 'resume_salary', 'resume_experience_months',
-                    'prediction', 'probability',
-                    'location_matching', 'resume_skill_count_in_vacancy',
-                    'last_position_in_vacancy', 'similarity_score_tfidf'
-                ]].copy()
-                
-                display_df['probability'] = display_df['probability'].apply(lambda x: f"{x:.2%}")
-                display_df['prediction'] = display_df['prediction'].apply(lambda x: "Подходит" if x == 1 else "Не подходит")
-                
-                display_df.columns = [
-                    'ID', 'Название', 'Локация', 'Возраст', 'Зарплата', 'Опыт (мес)',
-                    'Решение', 'Вероятность',
-                    'Совп. локации', 'Навыки', 'Совп. позиции', 'TF-IDF'
-                ]
-                
-                st.dataframe(
-                    display_df,
-                    use_container_width=True,
-                    height=400
-                )
-                
-            except Exception as e:
-                st.error(f"Ошибка при обработке: {str(e)}")
-                st.exception(e)
+# ── CSS ───────────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+  /* Шапка */
+  .app-header {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    border-radius: 16px;
+    padding: 32px 40px 24px;
+    margin-bottom: 28px;
+    color: white;
+  }
+  .app-header h1 { margin: 0; font-size: 2.4rem; font-weight: 800; letter-spacing: -0.5px; }
+  .app-header p  { margin: 6px 0 0; font-size: 1.05rem; opacity: 0.75; }
 
-else:
-    
-    json_input = st.text_area(
-        "Введите JSON:",
-        value=json.dumps(DEFAULT_JSON, indent=2, ensure_ascii=False),
-        height=400
+  /* Карточка кандидата */
+  .candidate-card {
+    background: #ffffff;
+    border: 1px solid #e8edf3;
+    border-radius: 14px;
+    padding: 20px 22px 16px;
+    margin-bottom: 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    transition: box-shadow .2s;
+  }
+  .candidate-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.11); }
+
+  /* Ранг и скор */
+  .rank-badge {
+    display: inline-block;
+    background: #0f3460;
+    color: white;
+    font-weight: 700;
+    border-radius: 50%;
+    width: 32px; height: 32px;
+    line-height: 32px;
+    text-align: center;
+    font-size: .85rem;
+    margin-right: 10px;
+    vertical-align: middle;
+  }
+  .score-high  { color: #1a7a4a; font-weight: 700; font-size: 1.15rem; }
+  .score-mid   { color: #b58a00; font-weight: 700; font-size: 1.15rem; }
+  .score-low   { color: #c0392b; font-weight: 700; font-size: 1.15rem; }
+
+  /* Мета-строка */
+  .meta { color: #6b7a8d; font-size: .88rem; margin: 6px 0 10px; }
+  .meta span { margin-right: 16px; }
+
+  /* Последняя должность */
+  .last-position-block {
+    background: #eef2ff;
+    border-left: 4px solid #4f46e5;
+    border-radius: 0 8px 8px 0;
+    padding: 8px 14px;
+    margin: 10px 0 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .last-position-label {
+    font-size: .72rem;
+    font-weight: 600;
+    color: #4f46e5;
+    text-transform: uppercase;
+    letter-spacing: .6px;
+  }
+  .last-position-value {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #1e1b4b;
+  }
+
+  /* Навыки */
+  .skill-badge {
+    display: inline-block;
+    background: #eef2ff;
+    color: #3730a3;
+    border-radius: 6px;
+    padding: 2px 9px;
+    font-size: .78rem;
+    margin: 2px 3px 2px 0;
+    font-weight: 500;
+  }
+
+  /* Секция формы */
+  .form-section {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 24px 28px;
+    margin-bottom: 24px;
+  }
+
+  /* Убираем лишние отступы Streamlit */
+  .block-container { padding-top: 1.5rem !important; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ── ClickHouse: детали резюме ──────────────────────────────────────────────────
+@st.cache_data(ttl=300, show_spinner=False)
+def get_resume_details(resume_ids: tuple) -> dict:
+    """Загружает детали резюме из ClickHouse по ID."""
+    try:
+        from clickhouse_driver import Client
+        ch = Client(
+            host=os.environ.get('CLICKHOUSE_HOST', 'localhost'),
+            port=int(os.environ.get('CLICKHOUSE_PORT', 9000)),
+            user=os.environ.get('CLICKHOUSE_USER', 'default'),
+            password=os.environ.get('CLICKHOUSE_PASSWORD', ''),
+            database=os.environ.get('CLICKHOUSE_DATABASE', 'default'),
+        )
+        rows = ch.execute(
+            "SELECT id, title, last_position, last_experience_description, "
+            "skills, salary, age, experience_months, location, gender, applicant_status, url "
+            "FROM hh_resumes WHERE id IN %(ids)s",
+            {'ids': list(resume_ids)},
+        )
+        return {
+            str(row[0]): {
+                'title':        row[1] or '',
+                'last_position': row[2] or '',
+                'last_experience_description': row[3] or '',
+                'skills':       row[4] if isinstance(row[4], list) else [],
+                'salary':       row[5] or '',
+                'age':          row[6],
+                'experience_months': row[7] or 0,
+                'location':     row[8] or '',
+                'gender':       row[9] or '',
+                'applicant_status': row[10] or '',
+                'url':          row[11] or '',
+            }
+            for row in rows
+        }
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_vacancies_from_clickhouse() -> pd.DataFrame:
+    """Загружает список вакансий из ClickHouse для выбора рекрутером."""
+    try:
+        from clickhouse_driver import Client
+        ch = Client(
+            host=os.environ.get('CLICKHOUSE_HOST', 'localhost'),
+            port=int(os.environ.get('CLICKHOUSE_PORT', 9000)),
+            user=os.environ.get('CLICKHOUSE_USER', 'default'),
+            password=os.environ.get('CLICKHOUSE_PASSWORD', ''),
+            database=os.environ.get('CLICKHOUSE_DATABASE', 'default'),
+        )
+        rows = ch.execute(
+            "SELECT id, name, area, employer, experience, employment, schedule, description "
+            "FROM hh_vacancies "
+            "WHERE name IS NOT NULL AND description IS NOT NULL "
+            "ORDER BY parsed_date DESC "
+            "LIMIT 2000"
+        )
+        df = pd.DataFrame(rows, columns=[
+            'id', 'name', 'area', 'employer', 'experience', 'employment', 'schedule', 'description',
+        ])
+        df = df.fillna('')
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+# ── Вспомогательные функции ───────────────────────────────────────────────────
+def _score_class(score: float) -> str:
+    if score >= 0.75:
+        return "score-high"
+    if score >= 0.5:
+        return "score-mid"
+    return "score-low"
+
+
+def _months_to_str(months) -> str:
+    if not months:
+        return "—"
+    m = int(months)
+    years, rem = divmod(m, 12)
+    parts = []
+    if years:
+        parts.append(f"{years} г.")
+    if rem:
+        parts.append(f"{rem} мес.")
+    return " ".join(parts) or "—"
+
+
+def _render_candidate_card(rank: int, resume_id: str, score: float, info: dict):
+    cls = _score_class(score)
+    score_pct = f"{score * 100:.1f}%"
+
+    last_position = info.get('last_position') or '—'
+    loc   = info.get('location') or '—'
+    exp   = _months_to_str(info.get('experience_months'))
+    age   = f"{int(info['age'])} лет" if info.get('age') else '—'
+    sal   = info.get('salary') or '—'
+    stat  = info.get('applicant_status') or '—'
+    url   = info.get('url') or ''
+    skills = info.get('skills') or []
+    descr  = info.get('last_experience_description') or ''
+
+    skills_html = ''.join(f'<span class="skill-badge">{s}</span>' for s in skills[:7])
+    if len(skills) > 7:
+        skills_html += f'<span class="skill-badge">+{len(skills) - 7}</span>'
+
+    url_html = (
+        f'<a href="{url}" target="_blank" style="color:#4f46e5; font-size:.82rem; '
+        f'text-decoration:none; font-weight:500;">🔗 Открыть резюме на HH.ru</a>'
+        if url else
+        f'<span style="color:#9aa3ae; font-size:.78rem;">ID: {resume_id}</span>'
     )
-    
-    if st.button("Получить оценку", type="primary", use_container_width=True):
-        try:
-            candidate_data = json.loads(json_input)
-            
-            with st.spinner("Обработка данных"):
-                response = requests.post(
+
+    card_html = f"""
+    <div class="candidate-card">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span class="rank-badge">#{rank}</span>
+        <span class="{cls}">{score_pct}</span>
+      </div>
+      <div class="last-position-block">
+        <span class="last-position-label">Последняя должность</span>
+        <span class="last-position-value">{last_position}</span>
+      </div>
+      <div class="meta">
+        <span>📍 {loc}</span>
+        <span>💼 {exp}</span>
+        <span>🎂 {age}</span>
+        <span>💰 {sal}</span>
+        <span>🔔 {stat}</span>
+      </div>
+      <div>{skills_html}</div>
+      <div style="margin-top:10px;">{url_html}</div>
+    </div>
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
+
+    if descr:
+        with st.expander("Описание последнего места работы", expanded=False):
+            st.write(descr[:2000] + ("…" if len(descr) > 2000 else ""))
+
+
+# ── Шапка ─────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="app-header">
+  <h1>🔍 HR AI Scout</h1>
+  <p>Умный подбор кандидатов с помощью машинного обучения</p>
+</div>
+""", unsafe_allow_html=True)
+
+
+# ── Выбор режима ввода вакансии ───────────────────────────────────────────────
+st.markdown("### Вакансия")
+
+tab_new, tab_db = st.tabs(["✏️ Новая вакансия", "🗃️ Выбрать из базы"])
+
+# Prefill defaults — заполняются при выборе вакансии из базы
+pf = st.session_state.get('prefill', {})
+
+with tab_db:
+    vacancies_df = load_vacancies_from_clickhouse()
+    if vacancies_df.empty:
+        st.warning("Не удалось загрузить вакансии из ClickHouse.")
+    else:
+        search_q = st.text_input(
+            "🔎 Поиск по названию или работодателю",
+            placeholder="например: Python, аналитик, Яндекс…",
+            key="vac_search",
+        )
+        if search_q.strip():
+            mask = (
+                vacancies_df['name'].str.contains(search_q, case=False, na=False) |
+                vacancies_df['employer'].str.contains(search_q, case=False, na=False)
+            )
+            filtered_df = vacancies_df[mask]
+        else:
+            filtered_df = vacancies_df
+
+        if filtered_df.empty:
+            st.info("Вакансии не найдены. Измените запрос.")
+        else:
+            options = [
+                f"{row['name']}  |  {row['employer'] or '—'}  |  {row['area'] or '—'}  [ID: {row['id']}]"
+                for _, row in filtered_df.iterrows()
+            ]
+            selected_idx = st.selectbox(
+                f"Найдено вакансий: {len(filtered_df)}",
+                range(len(options)),
+                format_func=lambda i: options[i],
+                key="vac_select",
+            )
+            if st.button("Использовать эту вакансию →", type="secondary"):
+                row = filtered_df.iloc[selected_idx]
+                st.session_state['prefill'] = {
+                    'name':        row['name'] or '',
+                    'area':        row['area'] or 'Москва',
+                    'experience':  _normalize_experience(row['experience']),
+                    'employment':  _normalize_employment(row['employment']),
+                    'schedule':    _normalize_schedule(row['schedule']),
+                    'description': row['description'] or '',
+                    'id':          str(row['id']),
+                }
+                pf = st.session_state['prefill']
+                st.success(f"Вакансия «{row['name']}» загружена. Перейдите во вкладку **✏️ Новая вакансия**.")
+
+# ── Форма вакансии ────────────────────────────────────────────────────────────
+with tab_new:
+    if pf:
+        st.info(
+            f"📋 Заполнено из базы: **{pf.get('name', '')}** (ID: {pf.get('id', '—')}). "
+            "Поля можно отредактировать.",
+            icon="ℹ️",
+        )
+
+    with st.form("vacancy_form", clear_on_submit=False):
+        col_left, col_right = st.columns([3, 2])
+
+        with col_left:
+            vacancy_name = st.text_input(
+                "Название вакансии",
+                value=pf.get('name', ''),
+                placeholder="например: Python-разработчик",
+            )
+            vacancy_area = st.text_input(
+                "Город *",
+                value=pf.get('area', 'Москва'),
+                placeholder="Москва",
+            )
+            vacancy_description = st.text_area(
+                "Описание вакансии *",
+                value=pf.get('description', ''),
+                placeholder="Опишите задачи, требования и условия работы…",
+                height=220,
+            )
+
+        with col_right:
+            exp_default  = EXPERIENCE_OPTIONS.index(pf['experience'])  if pf.get('experience')  in EXPERIENCE_OPTIONS  else 0
+            empl_default = EMPLOYMENT_OPTIONS.index(pf['employment']) if pf.get('employment') in EMPLOYMENT_OPTIONS else 0
+            sch_default  = SCHEDULE_OPTIONS.index(pf['schedule'])     if pf.get('schedule')    in SCHEDULE_OPTIONS    else 0
+
+            vacancy_experience = st.selectbox("Требуемый опыт *", EXPERIENCE_OPTIONS, index=exp_default)
+            vacancy_employment = st.selectbox("Тип занятости *",  EMPLOYMENT_OPTIONS, index=empl_default)
+            vacancy_schedule   = st.selectbox("График работы *",  SCHEDULE_OPTIONS,   index=sch_default)
+            vacancy_id = st.text_input(
+                "ID вакансии на HH.ru",
+                value=pf.get('id', ''),
+                placeholder="например: 126167948",
+                help="Заполняется автоматически при выборе из базы. "
+                     "Повышает точность за счёт ALS-модели.",
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.caption("Заполните **Город** и **Описание вакансии**, затем нажмите кнопку ниже.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        submitted = st.form_submit_button(
+            "🔍 Подобрать кандидатов",
+            type="primary",
+            use_container_width=True,
+        )
+
+
+# ── Результаты ────────────────────────────────────────────────────────────────
+if submitted:
+    errors = []
+    if not vacancy_area.strip():
+        errors.append("Укажите город.")
+    elif not all(c.isalpha() or c in ' -()' for c in vacancy_area) or not any('Ѐ' <= c <= 'ӿ' for c in vacancy_area):
+        errors.append("Город должен быть написан кириллицей.")
+    if not vacancy_description.strip():
+        errors.append("Заполните описание вакансии.")
+
+    if errors:
+        for e in errors:
+            st.error(e)
+    else:
+        payload = {
+            "vacancy_area":        vacancy_area.strip(),
+            "vacancy_experience":  vacancy_experience,
+            "vacancy_employment":  vacancy_employment,
+            "vacancy_schedule":    vacancy_schedule,
+            "vacancy_description": vacancy_description.strip(),
+        }
+        if vacancy_name.strip():
+            payload["vacancy_name"] = vacancy_name.strip()
+        if vacancy_id.strip():
+            payload["vacancy_id"] = vacancy_id.strip()
+
+        with st.spinner("Оцениваем кандидатов из базы резюме…"):
+            try:
+                resp = requests.post(
                     f"{FASTAPI_URL}/forward",
-                    json=candidate_data,
-                    timeout=10
+                    json=payload,
+                    timeout=180,
                 )
-            
-            if response.status_code == 200:
-                result = response.json()
-                prediction = result.get("prediction")
-                probability = result.get("probability")
-                
-                st.markdown("---")
-                st.markdown("### Результат оценки")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if prediction == 1:
-                        st.success("Решение: Подходит")
-                    else:
-                        st.error("Решение: Не подходит")
-                
-                with col2:
-                    st.metric(
-                        label="Вероятность",
-                        value=f"{probability:.2%}"
-                    )
-            
-            else:
-                st.error(f"Ошибка {response.status_code}: {response.text}")
-        
-        except json.JSONDecodeError as e:
-            st.error(f"Ошибка парсинга JSON: {str(e)}")
-        
-        except requests.exceptions.ConnectionError:
-            st.error("Ошибка подключения: Не удается связаться с FastAPI сервером")
-        
-        except requests.exceptions.Timeout:
-            st.error("Ошибка: Превышено время ожидания ответа")
-        
-        except Exception as e:
-            st.error(f"Неожиданная ошибка: {str(e)}")
+            except requests.exceptions.ConnectionError:
+                st.error("Нет подключения к API-серверу (http://localhost:8000). Убедитесь, что FastAPI запущен.")
+                st.stop()
+            except requests.exceptions.Timeout:
+                st.error("Превышено время ожидания ответа от API.")
+                st.stop()
+
+        if resp.status_code != 200:
+            st.error(f"Ошибка API ({resp.status_code}): {resp.text}")
+            st.stop()
+
+        results = resp.json()  # [{resume_id, y_pred_proba}, ...]
+
+        if not results:
+            st.warning("Кандидаты не найдены.")
+            st.stop()
+
+        resume_ids = tuple(r["resume_id"] for r in results)
+
+        with st.spinner("Загружаем профили кандидатов…"):
+            details_map = get_resume_details(resume_ids)
+
+        # ── Заголовок результатов ──────────────────────────────────────────
+        st.markdown("---")
+        vac_display = f'«{vacancy_name}»' if vacancy_name.strip() else f'«{vacancy_area}»'
+        st.markdown(f"### Топ-{len(results)} кандидатов для вакансии {vac_display}")
+
+        # Сводная метрика
+        scores = [r["y_pred_proba"] for r in results]
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric("Найдено кандидатов", len(results))
+        mc2.metric("Лучший скор",  f"{max(scores) * 100:.1f}%")
+        mc3.metric("Средний скор", f"{np.mean(scores) * 100:.1f}%")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Карточки кандидатов ────────────────────────────────────────────
+        for rank, item in enumerate(results, start=1):
+            rid   = item["resume_id"]
+            score = item["y_pred_proba"]
+            info  = details_map.get(rid, {})
+            _render_candidate_card(rank, rid, score, info)
