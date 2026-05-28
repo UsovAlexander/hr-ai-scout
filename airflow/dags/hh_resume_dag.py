@@ -2,10 +2,11 @@
 DAG для сбора резюме с HH.ru.
 
 resume_daily  — пн-сб в 01:00 МСК, 5 стр. × 20 резюме.
-               По завершении триггерит vacancy_daily.
+               По завершении триггерит vacancy_daily, labse_embeddings,
+               а после labse — retrain_pipeline.
 
 resume_weekly — сб в 23:00 МСК, 250 стр. × 20 резюме (полное обновление).
-               По завершении также триггерит vacancy_daily.
+               По завершении также триггерит те же DAG-и.
 """
 import sys
 import os
@@ -82,10 +83,23 @@ with DAG(
     trigger_vacancies = TriggerDagRunOperator(
         task_id='trigger_vacancy_daily',
         trigger_dag_id='vacancy_daily',
-        wait_for_completion=False,  # не ждём завершения vacancy, просто запускаем
+        wait_for_completion=False,
     )
 
-    parse_task >> trigger_vacancies
+    trigger_labse_daily = TriggerDagRunOperator(
+        task_id='trigger_labse_embeddings',
+        trigger_dag_id='labse_embeddings',
+        wait_for_completion=True,
+    )
+
+    trigger_retrain_daily = TriggerDagRunOperator(
+        task_id='trigger_retrain_pipeline',
+        trigger_dag_id='retrain_pipeline',
+        wait_for_completion=False,
+    )
+
+    parse_task >> [trigger_vacancies, trigger_labse_daily]
+    trigger_labse_daily >> trigger_retrain_daily
 
 
 # ── DAG 2: Еженедельный (сб в 23:00 МСК) ─────────────────────────────────────
@@ -113,4 +127,17 @@ with DAG(
         wait_for_completion=False,
     )
 
-    parse_task_weekly >> trigger_vacancies_weekly
+    trigger_labse_weekly = TriggerDagRunOperator(
+        task_id='trigger_labse_embeddings',
+        trigger_dag_id='labse_embeddings',
+        wait_for_completion=True,
+    )
+
+    trigger_retrain_weekly = TriggerDagRunOperator(
+        task_id='trigger_retrain_pipeline',
+        trigger_dag_id='retrain_pipeline',
+        wait_for_completion=False,
+    )
+
+    parse_task_weekly >> [trigger_vacancies_weekly, trigger_labse_weekly]
+    trigger_labse_weekly >> trigger_retrain_weekly

@@ -1,7 +1,9 @@
 version: '3.8'
 
 x-airflow-common: &airflow-common
-  image: apache/airflow:2.9.1-python3.11
+  build:
+    context: .
+    dockerfile: Dockerfile
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
@@ -12,6 +14,9 @@ x-airflow-common: &airflow-common
     AIRFLOW__WEBSERVER__SECRET_KEY: 'hr-ai-scout-secret'
     AIRFLOW__CORE__DEFAULT_TIMEZONE: 'Europe/Moscow'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    # LaBSE на CPU кодирует ~5000 резюме за 9 мин — дефолт 300 с убивает таск.
+    # Порог зомби = 2 часа; таск сам ограничен execution_timeout в DAG.
+    AIRFLOW__SCHEDULER__SCHEDULER_ZOMBIE_TASK_THRESHOLD: '7200'
     # Часовой пояс контейнера — Москва, чтобы datetime.now() писал правильное время
     TZ: Europe/Moscow
     # ClickHouse — host.docker.internal ссылается на хост-машину из Docker
@@ -27,6 +32,10 @@ x-airflow-common: &airflow-common
     - ./config:/opt/airflow/config
     # Монтируем директорию с парсерами, чтобы DAG-и могли их импортировать
     - ../load_data/parsing_data:/opt/airflow/parsers
+    # Монтируем app/ для чтения/записи артефактов (pkl-модели, векторайзер)
+    - ../app:/opt/airflow/app
+    # Кеш HuggingFace — модели (LaBSE и др.) скачиваются один раз на хост
+    - ~/.cache/huggingface:/home/airflow/.cache/huggingface
   extra_hosts:
     - "host.docker.internal:host-gateway"
   depends_on:
@@ -55,7 +64,6 @@ services:
     command:
       - -c
       - |
-        pip install --no-cache-dir -r /opt/airflow/parsers/requirements_airflow.txt
         airflow db migrate
         airflow users create \
           --username admin \
@@ -81,9 +89,7 @@ services:
 
   airflow-webserver:
     <<: *airflow-common
-    command: >
-      bash -c "pip install --no-cache-dir -r /opt/airflow/parsers/requirements_airflow.txt
-      && airflow webserver"
+    command: airflow webserver
     ports:
       - "8080:8080"
     healthcheck:
@@ -99,9 +105,7 @@ services:
 
   airflow-scheduler:
     <<: *airflow-common
-    command: >
-      bash -c "pip install --no-cache-dir -r /opt/airflow/parsers/requirements_airflow.txt
-      && airflow scheduler"
+    command: airflow scheduler
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
       interval: 30s
