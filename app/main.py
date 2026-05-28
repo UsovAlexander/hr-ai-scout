@@ -388,6 +388,25 @@ class TopResume(BaseModel):
     model_config = ConfigDict(json_schema_extra={"example": {"resume_id": "116651504", "y_pred_proba": 0.999}})
 
 
+class DecisionInput(BaseModel):
+    vacancy_id: Optional[str] = Field(None, description="ID вакансии с HH.ru")
+    vacancy_name: Optional[str] = None
+    vacancy_area: str
+    vacancy_experience: str
+    vacancy_employment: str
+    vacancy_schedule: str
+    vacancy_description: str
+    resume_id: str
+    target: int = Field(..., description="1 — пригласить, 0 — отклонить")
+
+    @field_validator('target')
+    @classmethod
+    def validate_target(cls, v: int) -> int:
+        if v not in (0, 1):
+            raise ValueError('target должен быть 0 или 1')
+        return v
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str
@@ -681,6 +700,91 @@ async def forward(data: VacancyInput, db: AsyncSession = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"модель не смогла обработать данные: {type(exc).__name__}: {exc}",
+        )
+
+
+@app.post("/decision", tags=["Prediction"])
+async def save_decision(data: DecisionInput):
+    """Сохраняет решение рекрутера (пригласить / отклонить) в ClickHouse recruiter_decisions."""
+    try:
+        from datetime import timezone as _tz
+
+        ch = _get_clickhouse_client()
+
+        # Получаем детали резюме из ClickHouse
+        rows = ch.execute(
+            "SELECT id, title, specialization, last_position, last_experience_description, "
+            "last_company_experience_period, skills, education, courses, "
+            "salary, age, total_experience, experience_months, location, gender, applicant_status "
+            "FROM hh_resumes WHERE id = %(id)s LIMIT 1",
+            {'id': data.resume_id},
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"Резюме {data.resume_id} не найдено")
+        r = rows[0]
+
+        def _to_int64(v) -> int:
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return 0
+
+        def _skills_str(v) -> str:
+            if isinstance(v, list):
+                return str(v)
+            return str(v) if v else ''
+
+        now_utc = datetime.now(_tz.utc).replace(tzinfo=None)
+
+        ch.execute(
+            "INSERT INTO recruiter_decisions ("
+            "vacancy_id, vacancy_name, vacancy_area, vacancy_experience, vacancy_employment, "
+            "vacancy_schedule, vacancy_description, "
+            "resume_id, resume_title, resume_specialization, resume_last_position, "
+            "resume_last_experience_description, resume_last_company_experience_period, "
+            "resume_skills, resume_education, resume_courses, "
+            "resume_salary, resume_age, resume_total_experience, resume_experience_months, "
+            "resume_location, resume_gender, resume_applicant_status, "
+            "target, decided_at"
+            ") VALUES",
+            [{
+                'vacancy_id':          _to_int64(data.vacancy_id),
+                'vacancy_name':        data.vacancy_name or '',
+                'vacancy_area':        data.vacancy_area,
+                'vacancy_experience':  data.vacancy_experience,
+                'vacancy_employment':  data.vacancy_employment,
+                'vacancy_schedule':    data.vacancy_schedule,
+                'vacancy_description': data.vacancy_description,
+                'resume_id':           _to_int64(data.resume_id),
+                'resume_title':        r[1] or '',
+                'resume_specialization': str(r[2]) if r[2] else '',
+                'resume_last_position': r[3] or '',
+                'resume_last_experience_description': r[4] or '',
+                'resume_last_company_experience_period': r[5] or '',
+                'resume_skills':       _skills_str(r[6]),
+                'resume_education':    _skills_str(r[7]),
+                'resume_courses':      _skills_str(r[8]),
+                'resume_salary':       str(r[9]) if r[9] else '',
+                'resume_age':          float(r[10]) if r[10] is not None else None,
+                'resume_total_experience': str(r[11]) if r[11] else '',
+                'resume_experience_months': float(r[12]) if r[12] is not None else None,
+                'resume_location':     r[13] or '',
+                'resume_gender':       r[14] or '',
+                'resume_applicant_status': r[15] or '',
+                'target':              int(data.target),
+                'decided_at':          now_utc,
+            }],
+        )
+        return {"status": "ok", "resume_id": data.resume_id, "target": data.target}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка сохранения решения: {type(exc).__name__}: {exc}",
         )
 
 

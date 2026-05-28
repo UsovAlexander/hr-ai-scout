@@ -403,6 +403,38 @@ with tab_new:
         )
 
 
+# ── Инициализация session_state ───────────────────────────────────────────────
+for _key in ('search_results', 'search_vacancy', 'search_details', 'decisions'):
+    if _key not in st.session_state:
+        st.session_state[_key] = None if _key != 'decisions' else {}
+
+
+def _send_decision(rid: str, target: int):
+    """Отправляет решение рекрутера на /decision и обновляет session_state."""
+    vac = st.session_state['search_vacancy'] or {}
+    payload = {
+        "vacancy_area":        vac.get('vacancy_area', ''),
+        "vacancy_experience":  vac.get('vacancy_experience', ''),
+        "vacancy_employment":  vac.get('vacancy_employment', ''),
+        "vacancy_schedule":    vac.get('vacancy_schedule', ''),
+        "vacancy_description": vac.get('vacancy_description', ''),
+        "resume_id":           rid,
+        "target":              target,
+    }
+    if vac.get('vacancy_name'):
+        payload['vacancy_name'] = vac['vacancy_name']
+    if vac.get('vacancy_id'):
+        payload['vacancy_id'] = vac['vacancy_id']
+    try:
+        r = requests.post(f"{FASTAPI_URL}/decision", json=payload, timeout=10)
+        if r.status_code == 200:
+            st.session_state['decisions'][rid] = target
+        else:
+            st.error(f"Ошибка сохранения решения: {r.text}")
+    except Exception as e:
+        st.error(f"Ошибка подключения: {e}")
+
+
 # ── Результаты ────────────────────────────────────────────────────────────────
 if submitted:
     errors = []
@@ -431,13 +463,9 @@ if submitted:
 
         with st.spinner("Оцениваем кандидатов из базы резюме…"):
             try:
-                resp = requests.post(
-                    f"{FASTAPI_URL}/forward",
-                    json=payload,
-                    timeout=180,
-                )
+                resp = requests.post(f"{FASTAPI_URL}/forward", json=payload, timeout=180)
             except requests.exceptions.ConnectionError:
-                st.error("Нет подключения к API-серверу (http://localhost:8000). Убедитесь, что FastAPI запущен.")
+                st.error("Нет подключения к API-серверу (http://localhost:8000).")
                 st.stop()
             except requests.exceptions.Timeout:
                 st.error("Превышено время ожидания ответа от API.")
@@ -447,34 +475,64 @@ if submitted:
             st.error(f"Ошибка API ({resp.status_code}): {resp.text}")
             st.stop()
 
-        results = resp.json()  # [{resume_id, y_pred_proba}, ...]
-
+        results = resp.json()
         if not results:
             st.warning("Кандидаты не найдены.")
             st.stop()
 
-        resume_ids = tuple(r["resume_id"] for r in results)
-
         with st.spinner("Загружаем профили кандидатов…"):
-            details_map = get_resume_details(resume_ids)
+            details_map = get_resume_details(tuple(r["resume_id"] for r in results))
 
-        # ── Заголовок результатов ──────────────────────────────────────────
-        st.markdown("---")
-        vac_display = f'«{vacancy_name}»' if vacancy_name.strip() else f'«{vacancy_area}»'
-        st.markdown(f"### Топ-{len(results)} кандидатов для вакансии {vac_display}")
+        # Сохраняем в session_state, сбрасываем решения
+        st.session_state['search_results']  = results
+        st.session_state['search_vacancy']  = payload
+        st.session_state['search_details']  = details_map
+        st.session_state['decisions']       = {}
 
-        # Сводная метрика
-        scores = [r["y_pred_proba"] for r in results]
-        mc1, mc2, mc3 = st.columns(3)
-        mc1.metric("Найдено кандидатов", len(results))
-        mc2.metric("Лучший скор",  f"{max(scores) * 100:.1f}%")
-        mc3.metric("Средний скор", f"{np.mean(scores) * 100:.1f}%")
+
+# Отображаем результаты из session_state (сохраняются между кликами кнопок)
+if st.session_state['search_results']:
+    results     = st.session_state['search_results']
+    details_map = st.session_state['search_details'] or {}
+    vac         = st.session_state['search_vacancy'] or {}
+
+    st.markdown("---")
+    vac_display = f'«{vac.get("vacancy_name", "")}»' if vac.get("vacancy_name") else f'«{vac.get("vacancy_area", "")}»'
+    st.markdown(f"### Топ-{len(results)} кандидатов для вакансии {vac_display}")
+
+    scores = [r["y_pred_proba"] for r in results]
+    decided = len(st.session_state['decisions'])
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("Найдено кандидатов", len(results))
+    mc2.metric("Лучший скор",        f"{max(scores) * 100:.1f}%")
+    mc3.metric("Средний скор",       f"{np.mean(scores) * 100:.1f}%")
+    mc4.metric("Решений принято",    f"{decided}/{len(results)}")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    for rank, item in enumerate(results, start=1):
+        rid   = item["resume_id"]
+        score = item["y_pred_proba"]
+        info  = details_map.get(rid, {})
+
+        # Карточка кандидата
+        _render_candidate_card(rank, rid, score, info)
+
+        # Кнопки решения
+        decision = st.session_state['decisions'].get(rid)
+        if decision is None:
+            btn_col1, btn_col2, _ = st.columns([1, 1, 3])
+            with btn_col1:
+                if st.button("✅ Пригласить", key=f"invite_{rid}", use_container_width=True):
+                    _send_decision(rid, 1)
+                    st.rerun()
+            with btn_col2:
+                if st.button("❌ Отклонить", key=f"reject_{rid}", use_container_width=True):
+                    _send_decision(rid, 0)
+                    st.rerun()
+        elif decision == 1:
+            st.success("✅ Приглашён на собеседование — решение сохранено")
+        else:
+            st.error("❌ Отклонён — решение сохранено")
 
         st.markdown("<br>", unsafe_allow_html=True)
-
-        # ── Карточки кандидатов ────────────────────────────────────────────
-        for rank, item in enumerate(results, start=1):
-            rid   = item["resume_id"]
-            score = item["y_pred_proba"]
-            info  = details_map.get(rid, {})
-            _render_candidate_card(rank, rid, score, info)
