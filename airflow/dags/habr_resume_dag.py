@@ -16,6 +16,7 @@ sys.path.insert(0, '/opt/airflow/parsers')
 import pendulum
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 from professions_list import PROFESSIONS_LIST
 from habr_resume_parser_db import HabrResumeParser
@@ -76,8 +77,16 @@ with DAG(
     tags=['resumes', 'habr', 'daily'],
 ) as dag:
 
-    PythonOperator(
+    parse_task = PythonOperator(
         task_id='parse_habr_resumes_daily',
         python_callable=parse_habr_resumes,
         op_kwargs={'pages': 3},
     )
+
+    trigger_embeddings = TriggerDagRunOperator(
+        task_id='trigger_labse_embeddings',
+        trigger_dag_id='labse_embeddings',
+        wait_for_completion=False,
+    )
+
+    parse_task >> trigger_embeddings
