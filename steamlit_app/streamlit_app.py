@@ -54,8 +54,8 @@ st.markdown("""
     margin-bottom: 28px;
     color: white;
   }
-  .app-header h1 { margin: 0; font-size: 2.4rem; font-weight: 800; letter-spacing: -0.5px; }
-  .app-header p  { margin: 6px 0 0; font-size: 1.05rem; opacity: 0.75; }
+  .app-header h1 { margin: 0; font-size: 2.4rem; font-weight: 800; letter-spacing: -0.5px; text-align: center; }
+  .app-header p  { margin: 6px 0 0; font-size: 1.05rem; opacity: 0.75; text-align: center; }
 
   /* Карточка кандидата */
   .candidate-card {
