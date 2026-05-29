@@ -4,145 +4,60 @@
   <img src="https://img.shields.io/badge/Python-3.9%2B-blue?logo=python" alt="Python">
   <img src="https://img.shields.io/badge/Machine-Learning-orange?logo=scikitlearn" alt="ML">
   <img src="https://img.shields.io/badge/Deep-Learning-red?logo=pytorch" alt="DL">
-  <img src="https://img.shields.io/badge/Web-Framework-green?logo=fastapi" alt="Web Framework">
+  <img src="https://img.shields.io/badge/FastAPI-green?logo=fastapi" alt="FastAPI">
   <img src="https://img.shields.io/badge/Status-In%20Development-yellow" alt="Status">
 </p>
 
-## 🎯 О проекте
+## О проекте
 
-**HR-AI Scout** — это интеллектуальный веб-сервис, предназначенный для автоматизации процесса первичного отбора кандидатов. Система анализирует резюме (в форматах PDF, DOCX) и агрегированные данные из различных источников (например, LinkedIn, HH.ru, superjob.ru), чтобы предсказать успешность кандидата на целевой позиции.
+**HR-AI Scout** — интеллектуальный сервис автоматического скоринга резюме. По описанию вакансии возвращает топ-10 наиболее подходящих кандидатов из базы, ранжированных моделью машинного обучения.
 
-**Ключевая цель:** Сократить время и ресурсы HR-специалистов на рутинный скрининг, предоставив им инструмент для объективного и основанного на данных первичного отбора.
-
----
-
-## 🚀 Возможности
-
-*   **📄 Автопарсинг резюме:** Извлечение ключевой информации из загружаемых файлов.
-*   **🔍 Агрегация данных:** Получение и анализ дополнительных данных из открытых источников.
-*   **🧠 ML/DL-скоринг:** Оценка кандидата с помощью ансамбля машинного и глубокого обучения.
-*   **📊 Интуитивный Dashboard:** Визуализация результатов скоринга, ключевых навыков и сравнение кандидатов.
+Система собирает резюме с Habr Career и вакансии с HH.ru / SuperJob, строит 17 признаков (категориальные, числовые, текстовое сходство TF-IDF и LaBSE), обучает CatBoost-пайплайн и обслуживает запросы через FastAPI REST API.
 
 ---
 
-## 🗺 Дорожная карта проекта (Этапы разработки)
-
-### Этап 1: Инициация и планирование
-*   **Знакомство с куратором, постановка и уточнение задачи.**
-*   Формирование требований (SRS).
-*   Разработка детального плана разработки и прототипа на год.
-
-### Этап 2: Исследование данных
-*   **Сбор данных и EDA.**
-*   Поиск и сбор датасетов (резюме, вакансии, успешность кандидатов).
-*   Проведение разведочного анализа данных (EDA), очистка и первичная обработка.
-
-### Этап 3: Базовые модели машинного обучения
-*   **Линейные модели ML.**
-*   Разработка и обучение базовых моделей (Линейная/Логистическая регрессия).
-*   Создание бейзлайна для оценки эффективности последующих моделей.
-
-### Этап 4: Усложнение моделирования
-*   **Нелинейные модели ML, feature-engineering и выбор лучшего ML-решения.**
-*   Активный feature engineering и отбор признаков.
-*   Эксперименты с нелинейными моделями (Random Forest, Gradient Boosting (XGBoost, LightGBM, CatBoost)).
-*   Сравнение, валидация и выбор чемпиона среди ML-моделей.
-
-### Этап 5: Воплощение в жизнь
-*   **Создание сервиса с имплементацией лучшего ML-решения.**
-*   Разработка backend-логики на FastAPI.
-*   Создание простого фронтенда (Streamlit) для взаимодействия с моделью.
-*   Деплой первой рабочей версии сервиса.
-
-### Этап 6: Глубокое обучение
-*   **DL-модели.**
-*   Исследование и применение моделей глубокого обучения (BERT, Transformer) для анализа текстов резюме.
-*   Сравнение качества DL и чемпионской ML-модели.
-
-### Этап 7: Финальный рывок и оптимизация
-*   **Доработка сервиса и финальный выбор модели.**
-*   Улучшение сервисной части по обратной связи от команды (UI/UX, производительность, документация).
-*   Гипертюнинг DL-моделей и финальное сравнение всех решений.
-*   **Выбор лучшего решения overall** и его финальная интеграция в продакшен-сервис.
-
----
-
-## 🛠 Технологический стек
+## Технологический стек
 
 | Категория | Технологии |
 | :--- | :--- |
-| **Бэкенд & API** | Python, FastAPI|
-| **Машинное обучение** | Scikit-learn, Pandas, NumPy, SciPy |
-| **Глубокое обучение** | PyTorch / TensorFlow, Transformers, BERT |
-| **Обработка текста** | NLTK, SpaCy|
+| **Бэкенд & API** | Python 3.11, FastAPI, SQLAlchemy + aiosqlite |
+| **ML-пайплайн** | CatBoost, Scikit-learn, implicit (ALS) |
+| **Текстовые признаки** | TF-IDF + pymorphy3, LaBSE (`cointegrated/LaBSE-en-ru`) |
+| **Фреймворки DL** | PyTorch, Transformers (HuggingFace) |
 | **Фронтенд** | Streamlit |
-| **Базы данных** | PostgreSQL, ClickHouse |
-| **Парсинг данных** | BeautifulSoup, Requests |
-| **Оркестрация** | Apache Airflow 2.9 |
-| **Деплой & DevOps** | Docker, Docker Compose |
+| **Хранилище** | ClickHouse (резюме, вакансии, эмбеддинги), SQLite (история запросов) |
+| **Парсинг** | BeautifulSoup, Requests |
+| **Оркестрация** | Apache Airflow 2.9 (LocalExecutor, Docker Compose) |
+| **Эксперименты** | MLflow |
 
 ---
 
-## 📦 Установка и запуск
+## Установка и запуск
 
-1.  **Клонируйте репозиторий:**
-    ```bash
-    git clone https://github.com/UsovAlexander/hr-ai-scout.git
-    cd hr-ai-scout
-    ```
+### 1. Клонирование и зависимости
 
-2.  **Создайте виртуальное окружение и установите зависимости:**
-    ```bash
-    python3 -m venv venv_hr_ai_scout
+```bash
+git clone https://github.com/UsovAlexander/hr-ai-scout.git
+cd hr-ai-scout
 
-    source ./venv_hr_ai_scout/bin/activate
-    
-    pip install -r requirements.txt
-    ```
+python3 -m venv venv_hr_ai_scout
+source ./venv_hr_ai_scout/bin/activate
+pip install -r requirements.txt
+```
 
-3.  **Настройте переменные окружения:**
+### 2. Переменные окружения
 
-    Создайте файл `.env` в корне проекта:
-    ```env
-    CLICKHOUSE_USER=default
-    CLICKHOUSE_PASSWORD=your_password
-    CLICKHOUSE_HOST=localhost
-    CLICKHOUSE_PORT=9000
-    CLICKHOUSE_DATABASE=default
-    ```
+Создайте `.env` в корне проекта:
 
-4.  **Для работы с MLFLOW используйте следующие команды**
+```env
+CLICKHOUSE_USER=default
+CLICKHOUSE_PASSWORD=your_password
+CLICKHOUSE_HOST=localhost
+CLICKHOUSE_PORT=9000
+CLICKHOUSE_DATABASE=default
+```
 
-    Сделайте файл исполняемым
-    ```
-    chmod +x mlflow_run.sh
-    ```
-    Запуск
-    ```
-    ./mlflow_run.sh start
-    ```
-
-    Запуск в фоновом режиме
-    ```
-    ./mlflow_run.sh start-d
-    ```
-
-    Остановка  
-    ```
-    ./mlflow_run.sh stop
-    ```
-    Принудительная остановка всех процессов mlflow
-    ```
-    ./mlflow_run.sh stop-all
-    ```
-    Статус
-    ```
-    ./mlflow_run.sh status
-    ```
-
-5. **Развёртывание ClickHouse**
-
-ClickHouse используется как основное хранилище резюме и вакансий. Проще всего запустить его через Docker:
+### 3. ClickHouse
 
 ```bash
 docker run -d \
@@ -154,15 +69,13 @@ docker run -d \
   clickhouse/clickhouse-server:latest
 ```
 
-> Веб-интерфейс (HTTP) — `http://localhost:8123`, нативный клиент (TCP) — порт `9000`.
+> Веб-интерфейс — `http://localhost:8123`, нативный клиент (TCP) — порт `9000`.
 
-После запуска создайте таблицы. Подключитесь к ClickHouse:
+Создайте таблицы:
 
 ```bash
 docker exec -it clickhouse clickhouse-client --password your_password
 ```
-
-И выполните DDL:
 
 ```sql
 CREATE TABLE IF NOT EXISTS hh_resumes (
@@ -216,7 +129,14 @@ CREATE TABLE IF NOT EXISTS hh_vacancies (
 ) ENGINE = MergeTree()
 ORDER BY (parsed_date, id);
 
--- Таблицы для хранения BERT-эмбеддингов (кешируются, не пересчитываются)
+CREATE TABLE IF NOT EXISTS resume_embeddings (
+    resume_id    String,
+    model_name   String,
+    embedding    Array(Float32),
+    created_at   DateTime DEFAULT now()
+) ENGINE = MergeTree()
+ORDER BY (model_name, resume_id);
+
 CREATE TABLE IF NOT EXISTS vacancy_embeddings (
     vacancy_id   String,
     model_name   String,
@@ -225,88 +145,163 @@ CREATE TABLE IF NOT EXISTS vacancy_embeddings (
 ) ENGINE = MergeTree()
 ORDER BY (model_name, vacancy_id);
 
-CREATE TABLE IF NOT EXISTS resume_embeddings (
-    resume_id    String,
-    model_name   String,
-    embedding    Array(Float32),
-    created_at   DateTime DEFAULT now()
+CREATE TABLE IF NOT EXISTS recruiter_decisions (
+    vacancy_id                          String,
+    vacancy_area                        Nullable(String),
+    vacancy_experience                  Nullable(String),
+    vacancy_employment                  Nullable(String),
+    vacancy_schedule                    Nullable(String),
+    vacancy_description                 Nullable(String),
+    resume_id                           String,
+    resume_skills                       Nullable(String),
+    resume_last_position                Nullable(String),
+    resume_last_experience_description  Nullable(String),
+    resume_last_company_experience_period Nullable(String),
+    resume_salary                       Nullable(String),
+    resume_age                          Nullable(Int64),
+    resume_experience_months            Nullable(Int64),
+    resume_location                     Nullable(String),
+    resume_gender                       Nullable(String),
+    resume_applicant_status             Nullable(String),
+    target                              Int8,
+    decided_at                          DateTime DEFAULT now()
 ) ENGINE = MergeTree()
-ORDER BY (model_name, resume_id);
+ORDER BY (decided_at, vacancy_id, resume_id);
 ```
 
----
+### 4. Apache Airflow
 
-6. **Развёртывание Apache Airflow и настройка сбора данных**
+> Требование: ClickHouse должен быть запущен до старта Airflow.
 
-Парсинг резюме и вакансий с HH.ru автоматизирован через Apache Airflow. Все данные сохраняются в ClickHouse по расписанию.
-
-> **Требование:** ClickHouse должен быть запущен до старта Airflow (шаг 5).
-
-**Запуск:**
 ```bash
 cd airflow
-docker compose up airflow-init   # первый запуск: инициализация БД и создание admin-пользователя
-docker compose up -d             # запуск планировщика и веб-сервера
+docker compose up airflow-init   # первый запуск: инициализация БД и admin-пользователя
+docker compose up -d
 ```
 
 Веб-интерфейс: **http://localhost:8080** — логин `admin`, пароль `admin`.
-
-В процессе `airflow-init` автоматически создаётся коннектор `clickhouse_default`, ссылающийся на хост-машину (`host.docker.internal`). Убедитесь, что параметры совпадают с вашим `.env`.
 
 **Расписание DAG-ов:**
 
 | DAG | Расписание | Описание |
 | :--- | :--- | :--- |
-| `resume_daily` | пн–сб в 01:00 МСК | 5 стр. × 20 резюме по каждой IT-профессии |
-| `resume_weekly` | сб в 23:00 МСК | 250 стр. × 20 резюме — полное обновление базы |
-| `vacancy_daily` | по триггеру | 5 стр. × 20 вакансий, запускается автоматически после `resume_daily` / `resume_weekly` |
+| `habr_resume_daily` | пн–сб, 03:00 МСК | Сбор резюме с Habr Career |
+| `hh_vacancy_daily` | по триггеру | Вакансии с HH.ru после сбора резюме |
+| `sj_vacancy_daily` | каждый день, 04:00 МСК | Вакансии с SuperJob |
+| `labse_embeddings` | по триггеру | LaBSE-эмбеддинги новых резюме и вакансий |
+| `retrain_pipeline` | пн–сб, 06:00 МСК | Дообучение CatBoost на решениях рекрутеров |
 
-Резюме и вакансии парсятся **последовательно**: сначала завершается сбор резюме, затем автоматически стартует сбор вакансий — это снижает нагрузку на HH.ru и уменьшает риск блокировки IP.
+Активация DAG-ов (по умолчанию приостановлены):
 
-Поле `parsed_date` сохраняется в часовом поясе **Europe/Moscow**.
-
-**Активация DAG-ов** (по умолчанию DAG-и приостановлены):
 ```bash
-docker compose exec airflow-scheduler airflow dags unpause resume_daily
-docker compose exec airflow-scheduler airflow dags unpause resume_weekly
-docker compose exec airflow-scheduler airflow dags unpause vacancy_daily
+cd airflow
+docker compose exec airflow-scheduler airflow dags unpause habr_resume_daily
+docker compose exec airflow-scheduler airflow dags unpause sj_vacancy_daily
+docker compose exec airflow-scheduler airflow dags unpause retrain_pipeline
 ```
 
-**Остановка Airflow:**
+**Остановка:**
 ```bash
 docker compose down
 ```
 
----
+### 5. MLflow
 
-7. **Для запуска сервиса с FASTAPI используйте следующие команды**
-
-Перед запуском сервиса необходимо подготовить данные с резюме.
-
-### Подготовка данных с резюме
-
-Сервис использует датасет `df_resumes`, содержащий резюме, с которыми будет сравниваться текст и параметры вакансии.
-
-Тестовый набор `df_resumes` можно скачать по ссылке:  
-https://disk.yandex.kz/d/Ybs4dTfwh1me5g
-
-После скачивания:
-- распакуйте архив (если применимо);
-- поместите файл с `df_resumes` в "app/"
-
-
-Перейдите в папку с сервисом FASTAPI
+```bash
+chmod +x mlflow_run.sh
+./mlflow_run.sh start      # foreground, порт 5000
+./mlflow_run.sh start-d    # background
+./mlflow_run.sh stop
+./mlflow_run.sh status
 ```
+
+### 6. FastAPI backend
+
+Поместите файл `df_resumes.csv` в папку `app/` (тестовый набор: https://disk.yandex.kz/d/Ybs4dTfwh1me5g).
+
+```bash
 cd app
-```
-
-Запустите сервис 
-```
 uvicorn main:app --reload
+# Swagger UI: http://127.0.0.1:8000/docs
 ```
 
+JWT-аутентификация: POST `/token` с `username=test&password=test` → bearer-токен (30 мин).
+
+### 7. Streamlit frontend
+
+```bash
+streamlit run steamlit_app/streamlit_app.py
+# http://localhost:8501
+```
 
 ---
 
-## 🏗 Архитектура
+## Архитектура
 
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Источники данных                            │
+│   Habr Career (резюме)          HH.ru / SuperJob (вакансии)        │
+└────────────┬────────────────────────────────┬───────────────────────┘
+             │                                │
+             ▼                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Apache Airflow (Docker)                           │
+│                                                                     │
+│  habr_resume_daily ──► labse_embeddings ──► retrain_pipeline        │
+│       03:00 МСК          (по триггеру)        06:00 МСК             │
+│                                                                     │
+│  hh_vacancy_daily ──────────────────────────────────────────────►  │
+│  sj_vacancy_daily  (по триггеру / 04:00 МСК)                       │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │ clickhouse-driver
+                             ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                         ClickHouse                                  │
+│                                                                     │
+│  hh_resumes          hh_vacancies        recruiter_decisions        │
+│  resume_embeddings   vacancy_embeddings                             │
+│        (LaBSE cointegrated/LaBSE-en-ru, 768-dim)                   │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                       ML-пайплайн                                   │
+│                                                                     │
+│  17 признаков:                                                      │
+│  ├── Категориальные: area, experience, employment, schedule,        │
+│  │                   location, gender, applicant_status             │
+│  ├── Числовые: salary, age, experience_months,                      │
+│  │             last_company_exp_months, skill_count,                │
+│  │             last_position_match, location_matching               │
+│  ├── TF-IDF cosine similarity  (pymorphy3 лемматизация, рус/англ)  │
+│  ├── LaBSE cosine similarity   (семантическое сходство, рус/англ)  │
+│  └── ALS score                 (коллаборативная фильтрация)         │
+│                                                                     │
+│  Модель: CatBoost + OrdinalEncoder (pipeline_cb_als_sim_labse.pkl) │
+│  Дообучение: recruiter_decisions → retrain_pipeline DAG             │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    FastAPI  (app/main.py)                            │
+│                                                                     │
+│  POST /token          — JWT-аутентификация                          │
+│  POST /forward        — топ-10 резюме по вакансии                   │
+│  GET  /history        — история предсказаний  [admin]               │
+│  GET  /stats          — агрегированная статистика  [admin]          │
+│  DELETE /history      — очистка истории  [admin]                    │
+│  GET  /health         — health check                                │
+│                                                                     │
+│  История → SQLite (hr_scout_history.db, async SQLAlchemy)           │
+└──────────────────────┬──────────────────────────────────────────────┘
+                       │ HTTP (localhost:8000)
+                       ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                  Streamlit  (steamlit_app/)                          │
+│                                                                     │
+│  Режим одного резюме — ввод параметров вручную, скор + топ-10       │
+│  Пакетный режим      — загрузка CSV, массовое предсказание,         │
+│                        сводная статистика, экспорт                  │
+└─────────────────────────────────────────────────────────────────────┘
+```

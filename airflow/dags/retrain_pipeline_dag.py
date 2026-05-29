@@ -264,6 +264,7 @@ def retrain_pipeline(**context):
     # Sparse-матрицы: ~8 МБ для 20k резюме × 5000 фичей.
     print("Обучаю TF-IDF векторайзер и вычисляю косинусное сходство...")
     _ensure_nltk()
+    import gc
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.preprocessing import normalize as sk_normalize
 
@@ -271,16 +272,27 @@ def retrain_pipeline(**context):
                   .drop_duplicates('resume_id'))
     unique_vac = df[['vacancy_id', 'vacancy_description']].drop_duplicates('vacancy_id')
 
+    # Освобождаем текстовые колонки из основного df — они больше не нужны
+    df.drop(columns=['vacancy_description', 'resume_last_experience_description',
+                     'resume_last_position', 'resume_skills'], inplace=True, errors='ignore')
+    gc.collect()
+
     print(f"  Лемматизирую {len(unique_res)} уникальных резюме для фита...")
     res_processed = [_preprocess_text_for_tfidf(t)
                      for t in unique_res['resume_last_experience_description']]
+    del unique_res
+    gc.collect()
 
     vectorizer = TfidfVectorizer(
         max_features=5000, min_df=2, max_df=0.8,
         ngram_range=(1, 2), lowercase=False,
     )
     res_tfidf = sk_normalize(vectorizer.fit_transform(res_processed), norm='l2')
-    res_idx_map = {rid: i for i, rid in enumerate(unique_res['resume_id'])}
+    res_idx_map = {rid: i for i, rid in enumerate(
+        df[['resume_id']].drop_duplicates('resume_id')['resume_id']
+    )}
+    del res_processed
+    gc.collect()
 
     os.makedirs(os.path.dirname(VECTORIZER_PATH), exist_ok=True)
     with open(VECTORIZER_PATH, 'wb') as f:
@@ -289,18 +301,23 @@ def retrain_pipeline(**context):
           f"(словарь: {len(vectorizer.vocabulary_):,} токенов)")
 
     print(f"  Лемматизирую {len(unique_vac)} уникальных вакансий...")
-    vac_tfidf = sk_normalize(
-        vectorizer.transform([_preprocess_text_for_tfidf(t)
-                               for t in unique_vac['vacancy_description']]),
-        norm='l2',
-    )
+    vac_processed = [_preprocess_text_for_tfidf(t)
+                     for t in unique_vac['vacancy_description']]
     vac_idx_map = {vid: i for i, vid in enumerate(unique_vac['vacancy_id'])}
+    del unique_vac
+    gc.collect()
+
+    vac_tfidf = sk_normalize(vectorizer.transform(vac_processed), norm='l2')
+    del vac_processed, vectorizer
+    gc.collect()
 
     vi = [vac_idx_map[v] for v in df['vacancy_id']]
     ri = [res_idx_map[r] for r in df['resume_id']]
     df['similarity_score_tfidf'] = (
         vac_tfidf[vi].multiply(res_tfidf[ri]).sum(axis=1).A1.tolist()
     )
+    del res_tfidf, vac_tfidf, vi, ri
+    gc.collect()
 
     # ── 5. LaBSE cosine similarity ─────────────────────────────────────────────
     print("Загружаю LaBSE-эмбеддинги из ClickHouse...")
@@ -408,7 +425,7 @@ def retrain_pipeline(**context):
 with DAG(
     dag_id='retrain_pipeline',
     description='Дообучение CatBoost-пайплайна на новых решениях рекрутеров.',
-    schedule=None,
+    schedule='0 6 * * 1-6',   # пн-сб в 06:00 МСК
     start_date=pendulum.datetime(2024, 1, 1, tz=MSK),
     catchup=False,
     default_args=DEFAULT_ARGS,

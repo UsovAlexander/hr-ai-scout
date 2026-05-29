@@ -10,7 +10,7 @@ DAG 3: LaBSE эмбеддинги резюме и вакансий.
 
 Логика DAG:
   1. Проверяет наличие новых резюме в hh_resumes И новых вакансий в hh_vacancies
-     без LaBSE-эмбеддингов. Если нет ничего нового — досрочный выход (ShortCircuit).
+     без LaBSE-эмбеддингов. Если нет ничего нового — encode-таски завершаются штатно.
   2. Загружает модель, кодирует last_experience_description новых резюме → resume_embeddings.
   3. Загружает модель, кодирует description новых вакансий → vacancy_embeddings.
      Вакансии могут добавляться рекрутером через Streamlit — DAG обрабатывает их
@@ -24,7 +24,7 @@ import warnings
 import pendulum
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator, ShortCircuitOperator
+from airflow.operators.python import PythonOperator
 
 warnings.simplefilter('ignore', FutureWarning)
 
@@ -134,9 +134,10 @@ def _save_embeddings(emb_map: dict, id_col: str, table: str, clickhouse):
 
 # ── Задачи DAG ────────────────────────────────────────────────────────────────
 
-def check_new_items(**context) -> bool:
+def check_new_items(**context):
     """
-    ShortCircuit: пропускает DAG только если нет новых резюме И нет новых вакансий.
+    Проверяет наличие новых резюме и вакансий без LaBSE-эмбеддингов.
+    Результаты записываются в XCom; encode-таски обрабатывают пустые списки самостоятельно.
     Вакансии могут добавляться рекрутером через Streamlit независимо от парсера.
     """
     ch = _get_clickhouse_client()
@@ -153,7 +154,19 @@ def check_new_items(**context) -> bool:
         {'m': MODEL_NAME},
     )
     new_resume_ids = [r[0] for r in resume_rows]
-    print(f"Новых резюме без LaBSE-эмбеддингов: {len(new_resume_ids)}")
+
+    no_text_rows = ch.execute(
+        """
+        SELECT count() FROM hh_resumes
+        WHERE id NOT IN (
+            SELECT resume_id FROM resume_embeddings WHERE model_name = %(m)s
+        )
+        AND (last_experience_description IS NULL OR last_experience_description = '')
+        """,
+        {'m': MODEL_NAME},
+    )
+    print(f"Новых резюме без LaBSE-эмбеддингов: {len(new_resume_ids)} "
+          f"(пропущено без описания: {no_text_rows[0][0]})")
 
     vacancy_rows = ch.execute(
         """
@@ -283,7 +296,7 @@ with DAG(
     tags=['embeddings', 'labse', 'bert'],
 ) as dag:
 
-    check_task = ShortCircuitOperator(
+    check_task = PythonOperator(
         task_id='check_new_items',
         python_callable=check_new_items,
     )
